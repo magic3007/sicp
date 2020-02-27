@@ -1,6 +1,6 @@
 # sicp
 
-<img align="right" src="./README.assets/sicptu.jpeg" alt="SICP" style="zoom: 25%;" />
+<img align="right" src="./README.assets/sicptu.jpeg" alt="SICP" width="300" height="300" />
 
 Implementation for the lesson Functional Programming(2020 Spring, advised by Wei Guo) in Peking University. [Structure and Interpretation of Computer Programs(SICP)](https://web.mit.edu/alexmv/6.037/sicp.pdf) is used as textbook.
 
