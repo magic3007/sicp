@@ -22,13 +22,14 @@
       (op (car sequence)
           (accumulate op initial (cdr sequence)))))
 
+; the same as append-map
 (define (flatmap proc seq)
   (accumulate append '() (map proc seq)))
 
 (define (permutations s)
   (if (null? s)
       (list '())
-      (flatmp (lambda (x)
+      (flatmap (lambda (x)
                 (map (lambda (p) (cons x p))
                      (permutations (remove x s))))
               s)))
@@ -42,11 +43,16 @@
                         tmp))
                  (car seqs)))))
 
-(define (print-line lst)
-    (for-each (lambda (x) (display x) (display " ")) lst))
+(define (join lst delimiter)
+  (rest (append* (map (lambda (x) (list delimiter x))
+                    lst))))
+
+(define (printListln lst delimiter)
+  (for-each (lambda (x) (display x)) (join lst delimiter))
+  (newline))
+
 
 ; ==========================================
-; buildin procedure
 ; More info in: https://docs.racket-lang.org/reference/
 ; ==========================================
 
@@ -59,7 +65,6 @@
          [y (+ x 1)])
       (list y x))
     '(2 1)
-
   letrec :  all ids are created first.
     >(letrec ([is-even? (lambda (n)
                        (or (zero? n)
@@ -68,11 +73,10 @@
                       (and (not (zero? n))
                            (is-even? (sub1 n))))])
     (is-odd? 11))
-
-  (let-values ([(id ...) val-expr] ...) body ...+): return multiple values
-  > (let-values ([(x y) (quotient/remainder 10 3)])
-    (list y x))
-    '(1 3)
+  let-values: (let-values ([(id ...) val-expr] ...) body ...+) eturn multiple values
+        > (let-values ([(x y) (quotient/remainder 10 3)])
+        (list y x))
+        '(1 3)
   let*-values
   letrec-values
 
@@ -99,8 +103,10 @@
   round : Returns the integer closest to x:real
   floor ceil truncate
   exact-round exact-floor exact-ceiling exact-truncate: return exact integer
+
   (numerator q) (denominator q): Coerces q to an exact number,  finds the numerator
      or demominatorof the number expressed in its simplest fractional form
+
   (rationalize x tolerance): Among the real numbers within (abs tolerance) of x, returns the one
      corresponding to an exact number whose denominator is the smallest.
     > (rationalize 1/4 1/10)
@@ -136,7 +142,7 @@
   
 
 4.9.1 Pair Constructors and Selectors
-  list*:  the last argument is used as the tail of 
+  -- list*:  the last argument is used as the tail of 
     the result, instead of the final element.
   > (list* 1 2)
     '(1 . 2)
@@ -151,16 +157,40 @@
       '(0 1 4 9 16)
 
 4.9.2 List Operations
-  list-tail :
-    > (list-tail (list 1 2 3 4 5) 2) 
-    '(3 4 5)
+  list-tail: (list-tail lst pos) suffix operation. we also have prefix operation (take lst pos)
+              > (list-tail (list 1 2 3 4 5) 2) 
+                '(3 4 5)
+  append: (append list ...)  the result is a list that contains all of the elements of the given
+          lists in order. 
+          > (append (list 1 2) (list 3 4))
+          '(1 2 3 4)
+  append*: (append* lst ... lsts) = (apply append lst ... lsts) Like append, but the last argument
+           is used as a list of arguments for append.
+           Note that we just have one argument. in this way, is to **unwrap+connect** a list
+           (append* '((1 2) (3 4))) -> '(1 2 3 4)
+         > (append* '(a) '(b) '((c) (d)))
+         '(a b c d)
+         > (cdr (append* (map (lambda (x) (list ", " x))
+                     '("Alpha" "Beta" "Gamma"))))
+           '("Alpha" ", " "Beta" ", " "Gamma")
+  flatten: (flatten v) flattens an arbitrary S-expression structure
+           of pairs into a list. It could also change a single value into a list.
+           > (flatten '((a) b (c (d) . e) ()))
+           '(a b c d e)
+           > (flatten 'a)
+           '(a)
 
-  (append list ...)
-
-  (reverse list)
-
+  reverse: (reverse list) reverse the list 
+      
+  
 4.9.3 List Iteration
-  map
+  map: (map proc lst ...+)
+  append-map: (append-map proc lst ...+) = (append* (map proc list ...))
+               the same as flatmap!!!!
+  filter-map: (filter-map proc lst ...+) = (filter (lambda (x) x) (map proc lst ...))
+               Like (map proc lst ...), except that, if proc returns #false, that element is omitted
+  count: (count proc list ...+) = (length (filter-map proc list ...))
+
   andmap ormap
     > (andmap positive? '(1 2 3))
       #t
@@ -178,32 +208,92 @@
   foldr: Like foldl, but the lists are traversed from right to left
 
 4.9.4 List Filtering
-  filter
-  (remove v lst [proc])
-  (remq v lst) = (remove v lst eq?)
-  remv 
-  (remove* v-lst lst [proc])
-  remq*
-  remv*
-  sort
+  filter: (filter pred lst)
+  remove: (remove v lst [proc])
+    remq: (remq v lst) = (remove v lst eq?)
+    remv: (remv v lst) = (remove v list eqv?) 
+  remove*, remq*, remv*: (remove* v-lst lst [proc]) like remove, but remove from list
+           every instance of every element of v-list
+           Example:
+           > (remove* (list 1 2) (list 1 1 3 2 4 5 2)
+             `(3 4 5)
+  sort: (sort lst less-than? [	#:key extract-key #:cache-keys? cache-keys?]) → list?
     > (sort '(1 3 4 2) <)
       '(1 2 3 4)
+    > (sort '("aardvark" "dingo" "cow" "bear") string<?)
+      '("aardvark" "bear" "cow" "dingo")
+    > > (sort '(("aardvark") ("dingo") ("cow") ("bear"))
+           #:key car string<?)
+        '(("aardvark") ("bear") ("cow") ("dingo"))
 
 4.9.5 List Searching
-  member: Locates the first element of lst that is equal? to v, and return
-    the tail of lst starting with that element
-  memv: eqv?
-  memq: eq?
-  (memf proc lst):  finds an element using the predicate proc
-  findf: Like memf, but returns the element found
+  member: (member v lst [is-equal?]) Locates the first element of lst that is equal? to v, and return
+           the tail of lst starting with that element
+    memq: (memv v lst) = (member v lst eq?)
+    memv: (memv v lst) = (member v lst eqv?)
+  memf: (memf proc lst) like member, but finds an element using the predicate proc
+  findf: (findf proc lst) Like memf, but returns the element found
+  assoc: (assoc v lst [is-equal?]) locate the first element of lst whose |car| is equal to v
+         > (assoc 3 (list (list 1 2) (list 3 4) (list 5 6)))
+           '(3 4)
+    assv: (assv v lst) = (assoc v lst eqv?)
+    assq: (assq v lst) = (assoc v lst eq?)
+  assf: (assf proc lst): similar to assoc, but return an element using the predicate |proc|
+    > (assf (lambda (arg)
+          (> arg 2))
+        (list (list 1 2) (list 3 4) (list 5 6)))
+       '(3 4)
 
-4.9.6 Pair Accessor Shorthands
-  make-list:
-    > (make-list 7 'foo)
-    '(foo foo foo foo foo foo foo)
 
+
+4.9.7 Additional List Functions and Synonyms
+  null? cons?
+  first: The same as (car lst), but only for lists (that are not empty).
+  rest: The same as (cdr lst), but only for lists (that are not empty).
+  last: (last lst) return the last element of the list
+        > (last '(1 2 3 4 5 6 7 8 9 10))
+          10
+  last-pair: (last-pair p) Returns the last pair of a (possibly improper) list.
+        > (last-pair '(1 2 3 4))
+          '(4)
+  make-list: (make-list k v) Returns a newly constructed list of length k, holding v in all positions.
+        > (make-list 7 'foo)
+       '(foo foo foo foo foo foo foo)
+  list-update: (list-update lst pos updater) Returns a list that is the same as lst except at the
+               specified index. The element at the specified index is (updater (list-ref lst pos)).
+        > (list-update '(zero one two) 1 symbol->string)
+          '(zero "one" two)
+   list-set: (list-set lst pos value) Returns a list that is the same as lst except at the specified
+              index. The element at the specified index is value.
+
+   index-of: (index-of lst v [is-equal?]) similar to member, but return the index
+   indexes-of: (indexes-of lst v [is-equal?]) like index-of but return all the indexs as list
+   index-where: (index-where lst proc) like index-of, but with predicate-searching
+               > (index-where '(1 2 3 4) even?)
+   indexes-where:  like index-where but return all the indexs as list            1
+
+   take: (take lst pos)  (prefix operation)Returns a fresh list whose elements are the first pos elements of lst.
+   drop: (drop lst pos)  (suffix operation) like list-tail Returns the list after the first pos elements of lst.
+   split-at: (split-at lst pos) = (values (take lst pos) (drop lst pos))
+   takef: (takef lst pred) similar to filter. Returns a fresh list whose elements are taken successively from lst as
+                           long as they satisfy pred. 
+   dropf: (dropf lst pred) Drops elements from the front of lst as long as they satisfy pred.
+                           could be implemented by filters
+   splitf-at: (splitf-at lst pred) = (values (takef lst pred) (dropf lst pred))
+   check-duplicates: (check-duplicates lst [same? #:key extract-key #:default failure-result])
+                   Returns the first duplicate item in lst; otherwise #:default
+        eg. check if two list begin with the same ele
+        > (check-duplicates '((a 1) (b 2) (a 3)) #:key car)
+        > '(a 3)
+    remove-duplicates: (remove-duplicates lst [same? #:key extract-key])
+        Returns a list that has all items in lst, but without duplicate items
+    range: (range end) or (range start end [step]) return a list of range
+    
 4.17 Procedures
-  apply: list -> multiple parameters
+  apply: (apply proc v ... lst #:<kw> kw-arg ...)
+          the last argument is used as a list of arguments for append. We could also have exactly one
+          arguments, in thi way, we could take a list of arguments for append
+
 
 10.1 Multiple Values
   (values v ...):
@@ -225,5 +315,5 @@
   > (define f (conjoin exact? integer?))
 
   (curry proc v ...+): eturns a procedure that is a curried version of proc
-
+  
 |#
