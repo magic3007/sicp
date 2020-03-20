@@ -47,16 +47,34 @@
   (rest (append* (map (lambda (x) (list delimiter x))
                     lst))))
 
-(define (printListln lst delimiter)
-  (for-each (lambda (x) (display x)) (join lst delimiter))
-  (newline))
+(define (display-list lst delimiter)
+  (for-each (lambda (x) (display x)) (join lst delimiter)))
 
+;---------- about tags:
+(define (attach-tag type-tag contents)
+  (cons type-tag contents))
+
+(define (type-tag datum)
+  (if (pair? datum)
+      (car datum)
+      (error "Bad tagged datum -- TYPE-TAG" datum)))
+(define (contents datum)
+  (if (pair? datum)
+      (cdr datum)
+      (error "Bad tagged datum -- CONTENTS" datum)))
 
 ; ==========================================
 ; More info in: https://docs.racket-lang.org/reference/
 ; ==========================================
 
 #|
+
+1.3.8 Reading Quotes
+  ' quote 
+  ` quasiquote
+  , unquote
+
+  `(1 ,2) reads equal to  (list 'quasiquote (list 1 (list 'unquote 2)))
 
 3.9 Local Binding
   
@@ -209,6 +227,7 @@
 
 4.9.4 List Filtering
   filter: (filter pred lst)
+  filter-not: (filter-not pred lst) Like filter, but the meaning of the pred predicate is reversed
   remove: (remove v lst [proc])
     remq: (remq v lst) = (remove v lst eq?)
     remv: (remv v lst) = (remove v list eqv?) 
@@ -227,11 +246,11 @@
         '(("aardvark") ("bear") ("cow") ("dingo"))
 
 4.9.5 List Searching
-  member: (member v lst [is-equal?]) Locates the first element of lst that is equal? to v, and return
-           the tail of lst starting with that element
+  member: (member v lst [is-equal?]) Locates the first element of lst that is equal? to v, If such an element exists,
+                                     **the tail of lst starting with that element is returned**. Otherwise, the result is #f.
     memq: (memv v lst) = (member v lst eq?)
     memv: (memv v lst) = (member v lst eqv?)
-  memf: (memf proc lst) like member, but finds an element using the predicate proc
+  memf: (memf proc lst) like member, but finds an element using the predicate proc’s
   findf: (findf proc lst) Like memf, but returns the element found
   assoc: (assoc v lst [is-equal?]) locate the first element of lst whose |car| is equal to v
          > (assoc 3 (list (list 1 2) (list 3 4) (list 5 6)))
@@ -293,7 +312,157 @@
   apply: (apply proc v ... lst #:<kw> kw-arg ...)
           the last argument is used as a list of arguments for append. We could also have exactly one
           arguments, in thi way, we could take a list of arguments for append
+  compose: (compose proc ...)
+            Returns a procedure that composes the given functions, applying the last proc first and the first proc last.
+            while compose1 restricts the internal value passing to a single value.
+           > ((compose1 - sqrt) 10)
+            -3.1622776601683795 
+4.17.3 Additional Higher-Order Functions
+  
+  negate: it returns the not of proc’s result
 
+  conjoin, disjoin: combines calls to each functions with and / or.
+        > (define f (conjoin exact? integer?))
+
+  curry: (curry proc v ...+) returns a procedure that is a curried version of proc
+        > (define sum? (curry member '+))
+  curryr: (curryr proc v ...+) Like curry, except that the arguments are collected in the opposite direction
+        > (define in? (curryr member lst))
+
+9. Pattern Matching
+  match: (match val-expr clause ...)
+    clause    =   [pat body ...+]
+              |   [pat (=> id) body ...+]
+              |   [pat #:when cond-expr body ...+]
+    - An optional #:when cond-expr specifies 
+    that the pattern should only match if cond-expr p
+    roduces a true value.
+    > (define (m x)
+        (match x
+          [(list a b c)
+          #:when (= 6 (+ a b c))
+          'sum-is-six']
+        [(list a b c) 'sum-is-not-six']))
+    > (m '(1 2 3))
+     'sum-is-six
+    > (m '(2 3 4))
+    'sum-is-not-six
+    - An optional (=> id) between a pat and the bodys is bound to a failure 
+    procedure of zero arguments. If this procedure is invoked, it escapes back to the pattern matching expression, 
+    and resumes the matching process as if the pattern had failed to match. 
+    > (define (m x)
+        (match x
+          [(list a b c)
+           (=> exit)
+           (f x exit)]
+          [(list a b c) 'sum-is-not-six]))
+    > (define (f x exit)
+        (if (= 6 (apply + x))
+            'sum-is-six
+            (exit)))
+    > (m '(1 2 3))
+     'sum-is-six
+    > (m '(2 3 4))
+    'sum-is-not-six
+     - If an id is used multiple times within a pattern, 
+     the corresponding matches must be the same according 
+     to (match-equality-test), except that instances of an 
+     id in different or and not sub-patterns are independent.
+     > (match '(1 2 3)
+       [(list a b a) (list a b)]
+      [(list a b c) (list c b a)])
+      '(3 2 1)
+      _ : matches anything, without binding any identifiers.
+      > (match '(1 2 3)
+        [(list _ _ a) a])
+        3
+
+      - For spliced lists, ... and ___ are aliases for zero or more matches.
+      The ..k and __k forms are also aliases, specifying k or more matches. 
+      > (match '(1 2 3)
+        [(list 1 a ...) a])
+        '(2 3)
+      > (match '(1 2 3)
+        [(list 1 a ..3) a]
+        [_ 'else])
+        'else
+      > (match '(1 2 3 4 5)
+        [(list 1 a ..3 5) a]
+        [_ 'else])
+        '(2 3 4)
+      > (match '(1 (2) (2) (2) 5)
+        [(list 1 (list a) ..3 5) a]
+        [_ 'else])
+        '(2 2 2)
+
+      - (list-rest lvp ... pat) —similar to a list pattern, but the 
+      final pat matches the “rest” of the list after the last lvp.
+
+        > (match '(1 2 3 . 4)
+        [(list-rest a b c d) d])
+        4
+        > (match '(1 2 3 . 4)
+          [(list-rest a ... d) (list a d)])
+        '((1 2 3) 4)
+
+      - (list-no-order pat ...) —similar to a list pattern, but the elements to match each 
+      pat can appear in the list in any order.
+      > (match '(1 2 3)
+       [(list-no-order 3 2 x) x])
+       1
+
+      - (list-no-order pat ... lvp) —generalizes list-no-order to 
+      allow a pattern that matches multiple list elements that are interspersed in any order with matches for the other patterns.
+      > (match '(1 2 3 4 5 6)
+        [(list-no-order 6 2 y ...) y])
+        '(1 3 4 5)
+
+      - (vector lvp ...) — like a list pattern, but matching a vector.
+      > (match #(1 (2) (2) (2) 5)
+        [(vector 1 (list a) ..3 5) a])
+        '(2 2 2)
+
+      - (hash-table (pat pat) ...) —similar to list-no-order, 
+         but matching against hash table’s key–value pairs.
+         > (match #hash(("a" . 1) ("b" . 2))
+           [(hash-table ("b" b) ("a" a)) (list b a)])
+           '(2 1)
+      - (hash-table (pat pat) ...+ ooo)
+         Generalizes hash-table to support a final repeating pattern
+         > (match #hash(("a" . 1) ("b" . 2))
+          [(hash-table (key val) ...) key])
+          '("b" "a")
+      - (cons a b) : matches a pair value
+      - (mcons a b): matches a mutable pair value
+      - (? expr pat ...): applies expr to the value to be matched, and checks whether the result is a true value
+        > (match '(1 3 5)
+            [(list (? odd?) ...) 'yes])
+            'yes
+  match*: (match* (val-expr ..+) clause* ...)
+      Matches a sequence of values against each clause in order, matching only when all patterns in a clause match.
+
+  match-let: (match-let ([pat expr]...) body...+)
+              Generalizes let to support pattern bindings. 
+            > (match-let ([(list a b) '(1 2)]
+              [(vector x ...) #(1 2 3 4)])
+                 (list b a x))
+            '(2 1 (1 2 3 4))
+            > (match* (1 2 3)
+            [(_ (? number?) x) (add1 x)])
+            4
+
+            > (match* (15 17)
+                [((? number? a) (? number? b))
+                #:when (= (+ a 2) b)
+                'diff-by-two])
+                'diff-by-two
+  match-let*: (match-let* ([pat expr]...) body...+)
+            Like match-let, but generalizes let*, so that the 
+            bindings of each pat are available in each subsequent expr.
+  match-let-values: (match-let-values ([(pat ...) expr] ...) body ...+)
+            Like match-let, but generalizes let-values.
+  match-let*-values: (match-let*-values ([(pat ...) expr] ...) body ...+)
+            Like match-let*, but generalizes let*-values.
 
 10.1 Multiple Values
   (values v ...):
@@ -305,15 +474,4 @@
     > (call-with-values (lambda () (values 1 2)) +)
       3
 
-
-
-4.17.3 Additional Higher-Order Functions
-  
-  negate: it returns the not of proc’s result
-
-  conjoin, disjoin: combines calls to each functions with and / or.
-  > (define f (conjoin exact? integer?))
-
-  (curry proc v ...+): eturns a procedure that is a curried version of proc
-  
 |#
