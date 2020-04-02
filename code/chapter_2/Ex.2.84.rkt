@@ -187,7 +187,8 @@
          (b (imag-part z1))
          (c (real-part z2))
          (d (imag-part z2)))
-     (let ((denom (+ (square c) (square d))))
+     (
+      let ((denom (+ (square c) (square d))))
        (make-from-real-imag (/ (+ (* a c) (* b d)) denom)
                             (/ (- (* b c) (* a d)) denom)))))
 
@@ -271,26 +272,18 @@
 (define (div x y) (apply-generic 'div x y))
 
 
-
-
-
-
 (define (install-raise-package) ;install raise functions 
   (define (raise-integer n)
     (make-rational (contents n) 1))
   (define (raise-rational q)
-    (let* ([content (contents q)])
-      (make-real (/ (car content) (cdr content)))))
+    (match-let* ([`(,n . ,d) (contents q)])
+      (make-real (/ n d))))
   (define (raise-real r)
     (make-complex-from-real-imag (contents r) 0))
   ; interface
-  (put-coercion 'integer 'rational raise-integer)
-  (put-coercion 'rational 'real raise-rational)
-  (put-coercion 'real 'complex raise-real)
   (put 'raise 'integer raise-integer)
   (put 'raise 'rational raise-rational)
-  (put 'raise 'real raise-real)
-  'done)
+  (put 'raise 'real raise-real))
 
 (define (numerical-order x)
   (case x
@@ -306,15 +299,13 @@
     (if proc
         (apply proc (map contents args))
         (if (= (length args) 2)
-            (let* ([t1 (car type-tags)]
-                   [t2 (cadr type-tags)]
-                   [a1 (car args)]
-                   [a2 (cadr args)]
-                   [raise-t1 (get 'raise t1)]
-                   [raise-t2 (get 'raise t2)]
-                   [order-t1 (numerical-order t1)]
-                   [order-t2 (numerical-order t2)]
-                   )
+            (match-let*
+                ([`(,t1 ,t2) type-tags]
+                 [`(,a1 ,a2) args]
+                 [raise-t1 (get 'raise t1)]
+                 [raise-t2 (get 'raise t2)]
+                 [order-t1 (numerical-order t1)]
+                 [order-t2 (numerical-order t2)])
               (cond
                 [(< order-t1 order-t2)
                  (apply-generic op (raise-t1 a1) a2)]
@@ -324,22 +315,22 @@
                  (error "miss binary operator definition" (list op type-tags))]))
             (error "only support binary operator" (list op type-tags))))))
 
-
-
 (define (display-obj x)
   (define (transform x)
-    (if ((negate pair?) (cdr x))
-        (list (car x) (cdr x))
-        (cons (car x) (transform (cdr x)))))
+    (match-let*
+        ([`(,a ... . ,b) x])
+      (append a `(,b))))
+  
   (define visual-symbols '(integer rational real complex))
+  
   (define (remove-unvisual-symbol lst)
     (filter-not
      (lambda (x)
-       (and (symbol? x) ((negate memq) x visual-symbols)))
+       (and (symbol? x) (not (memq x visual-symbols))))
      lst))
+ 
   (displayln (remove-unvisual-symbol (transform x))))
 
-(display-obj '(complex rectangular 30 40))
 
 (install-integer-package)
 (install-rational-package)

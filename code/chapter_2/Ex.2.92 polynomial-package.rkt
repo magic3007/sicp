@@ -137,7 +137,7 @@
       [`(integer . ,x) x]
       [`(polynomial ,var . ,rest)
        (cons var (display-terms rest))]))
-  (println (display p)))
+  (displayln (display p)))
 
 (define (build-poly e)
   (define (build-terms t)
