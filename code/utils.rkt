@@ -77,7 +77,17 @@
   `(1 ,2) reads equal to  (list 'quasiquote (list 1 (list 'unquote 2)))
 
 3.9 Local Binding
-  
+    
+  let : (let proc-id ([id init-expr] ...) body ...+)
+    let is a syntactic sugar of lambda. *proc-id* could specify the function name.
+    (define (kproduct lst k)
+      (let ([break k])
+        (let loop ([lst lst] [k k])
+          (cond
+            [(null? lst) (k 1)]
+            [(zero? (first lst)) (break 0)]
+            [else (loop (cdr lst) (lambda (x) (k (* (first lst) x))))]))))
+ 
   let* :  evaluates the val-exprs **one by one**
     > (let* ([x 1]
          [y (+ x 1)])
@@ -91,7 +101,7 @@
                       (and (not (zero? n))
                            (is-even? (sub1 n))))])
     (is-odd? 11))
-  let-values: (let-values ([(id ...) val-expr] ...) body ...+) eturn multiple values
+  let-values: (let-values ([(id ...) val-expr] ...) body ...+) return multiple values
         > (let-values ([(x y) (quotient/remainder 10 3)])
         (list y x))
         '(1 3)
@@ -103,6 +113,25 @@
     [(datum1...) then-body1 ...+]
     [(datum2...) then-body2 ...+]
     [else else-body ...+]
+
+3.18 Iterations and Comprehensions
+    - for: (for (for-clause ...) body-or-break ... body)
+        for-clause      =       [id seq-expr]
+                        |       [(id ...) seq-expr]
+                        |       #:when guard-expr
+                        |       #:unless guard-expr
+                        |       break-clause
+        > (for ([i '(1 2 3)]
+                [j "abc"]
+                #:when (odd? i)
+                [k #(#t #f)])
+                (display (list i j k)))
+            (1 a #t)(1 a #f)(3 c #t)(3 c #f)
+
+    - for/sum: (for/sum (for-clause ...) body-or-break ... body)
+        Iterates like for, but each result of the last body is accumulated into a result with +.
+        > (for/sum ([i '(1 2 3 4)]) i) 
+        10
 
 4.2.1 Number Types
   even? odd?
@@ -473,5 +502,46 @@
   (call-with-values generator receiver):
     > (call-with-values (lambda () (values 1 2)) +)
       3
+
+10.4 Continuations
+    call/cc : (call/cc proc [prompt-tag])
+        proc : (continuation? . -> . any)
+        prompt-tag      : continuation-prompt-tag?
+                          = (default-continuation-prompt-tag)
+        alias for "call-with-current-continuation"
+        - *call/cc* is a procedure of one argument *proc*, 
+          and the aurgment *proc* must also be a procedure of one argument
+        - the continuation is passed to *proc* as the parameter
+        - *proc* is called directly in tail position with respect to *call/cc*.
+          and its return value is return by *call/cc*
+        - prompt-tag(optional): captures the current continuation up to the nearest prompt tagged by *prompt-tag*
+    let/cc : (let/cc k body ...+) = (call/cc (lambda (k) body ...))
+
+    
+11.3.2 Parameters
+    Parameters are variables that can be dynamically bound.
+    - make-parameter: (make-parameter v [guard name])
+        Returns a new parameter procedure. The value of the parameter is initialized to v in all threads.
+    - (parameterize ([parameter-expr value-expr] ...) body ...)
+        The result of a parameterize expression is the result of the last body.
+        This is preferable to set! for several reasons (tail calls, threads, exceptions).
+    > (define color (make-parameter "Blue"))
+      (define (best-color) (display (color)))
+      (best-color)
+      (parameterize ([color "red"])
+       (best-color))
+      (best-color)
+
+13.5 Writing
+    There are at least three ways to output data (to the console).
+    - `display` removes all quotation marks and string delimiters
+    - `print` does not remove any quotation or string delimiters
+    - `write` remoes the outermost quotation mark if any
+    > (displayln '(a "azer" 3))
+      (println '(a "azer" 3))
+      (writeln '(a "azer" 3))
+      (a azer 3)
+      '(a "azer" 3)
+      (a "azer" 3)
 
 |#
