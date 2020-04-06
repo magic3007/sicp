@@ -10,4 +10,6 @@ Implementation for the lesson Functional Programming(2020 Spring, advised by Wei
 
 - http://lisp.test.openjudge.org/: Online Judge hosted by Peking University
 - [Racket](https://racket-lang.org/):  a general-purpose, multi-paradigm programming language based on the Scheme dialect of Lisp
-- [IRacket](https://github.com/rmculpepper/iracket): a Racket kernel for Jupyter
+- [IRacket](https://github.com/rmculpepper/iracket): a Racket kernel for `Jupyter`
+- [RacketGuideInChinese](https://github.com/OnRoadZy/RacketGuideInChinese)
+
