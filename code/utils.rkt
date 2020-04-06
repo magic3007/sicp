@@ -114,6 +114,16 @@
     [(datum2...) then-body2 ...+]
     [else else-body ...+]
 
+3.16 Guarded Evaluation: when and unless
+    when: (when test-expr body ...+)
+        similar to "if", but without else
+    unless: (unless test-expr body ...+)
+        similar to "if", but without then
+
+3.15 Sequencing
+    begin: (begin ...) the results are ignored for all but the last expr
+    begin0: (begin0 ...) the results are ignored for all but the first expr
+
 3.18 Iterations and Comprehensions
     - for: (for (for-clause ...) body-or-break ... body)
         for-clause      =       [id seq-expr]
@@ -121,12 +131,39 @@
                         |       #:when guard-expr
                         |       #:unless guard-expr
                         |       break-clause
+            The for form iterates by drawing an element from each sequence
+             if any sequence is empty, then the iteration stops.
+            However, If any for-clause has the form #:when guard-expr, then only the preceding 
+            clauses (containing no #:when or #:unless) determine iteration as above
+            
         > (for ([i '(1 2 3)]
+                [j "abc"]
+                [k #(#t #f)])
+                (display (list i j k)))
+            (1 a #t)(2 b #f)
+
+        > for ([i '(1 2 3)]
                 [j "abc"]
                 #:when (odd? i)
                 [k #(#t #f)])
                 (display (list i j k)))
-            (1 a #t)(1 a #f)(3 c #t)(3 c #f)
+            (1 a #t)(1 a #f)(3 c #t)(3 c #f)(
+
+        > (for ([i 3])
+            (display i))
+        012
+
+        > (for ([i (in-range 3)])
+            (display i))
+        012
+
+        > (for ([i (in-range 1 4)])
+            (display i))
+        123
+
+        > (for ([i (in-range 1 4 2)])
+            (display i))
+        13
 
     - for/sum: (for/sum (for-clause ...) body-or-break ... body)
         Iterates like for, but each result of the last body is accumulated into a result with +.
@@ -281,7 +318,7 @@
     memv: (memv v lst) = (member v lst eqv?)
   memf: (memf proc lst) like member, but finds an element using the predicate proc’s
   findf: (findf proc lst) Like memf, but returns the element found
-  assoc: (assoc v lst [is-equal?]) locate the first element of lst whose |car| is equal to v
+  assoc: (assoc v lst [is-equal?]) locate the first element of lst whose |car| is equal to v. Otherwise, the result is #f
          > (assoc 3 (list (list 1 2) (list 3 4) (list 5 6)))
            '(3 4)
     assv: (assv v lst) = (assoc v lst eqv?)
@@ -336,7 +373,90 @@
     remove-duplicates: (remove-duplicates lst [same? #:key extract-key])
         Returns a list that has all items in lst, but without duplicate items
     range: (range end) or (range start end [step]) return a list of range
+ 
+4.10 Mutable Pairs & lists
+
+```racket
+(require scheme/mpair)
+(define list mlist)
+(define cdr mcdr)
+(define car mcar)
+(define set-car! set-mcar!)
+(define set-cdr! set-mcdr!)
+(define cons mcons)
+(define assoc massoc)
+```
+
+4.11 Vectors
+
+    - make-vector : (make-vector size [v=0])
+    - vector : (vector ...) Returns a newly allocated mutable vector with as many slots as provided
+    - build-vector: (build-vector n proc) Creates a vector of n elements by applying proc to the integers from 0 to (sub1 n)
+    - vector-immuatble : (vector-immuatble ...) returns a newly allocated immutable vector
+    - vector-length : (vector-length vec)
+    - vector-ref : (vector-ref vec pos)
+    - vector-set! : (vector-set! vec pos v)
+    - vector->list : (vector->list vec)
+    - list->vector : (list->vector lst)
+    - vector->immutable-vector: (vector->immutable-vector vec)
+    - vector-fill!: (vector-fill! vec v) Changes all slots of vec to contain v.
+  
+4.11.1 Additional Vector Functions
     
+     (require racket/vector)
+
+     - vector-empty? : (vector-empty? v)
+     - vector-argmin : (vector-argmin proc vec) This returns the first element in the non-empty vector vec that minimizes the result of proc.
+     - vector-argmax : (vector-argmax proc vec)
+     - vector-sort: (vector-sort vec less-than? [start end #:key    #:cache-keys? cache-keys?])
+        > (define v1 (vector 4 3 2 1))
+        > (vector-sort v1 <)
+        '#(1 2 3 4)
+
+        > v1
+        '#(4 3 2 1)
+
+        > (define v2 (vector '(4) '(3) '(2) '(1)))
+        > (vector-sort v2 < 1 3 #:key car)
+        '#((2) (3))
+
+        > v2
+        '#((4) (3) (2) (1))
+     - vector-sort!: (vector-sort! vec less-than? [start end #:key    #:cache-keys? cache-keys?])
+        inplace.
+        > (define v1 (vector 4 3 2 1))
+        > (vector-sort! v1 <)
+        > v1
+        '#(1 2 3 4)
+
+        > (define v2 (vector '(4) '(3) '(2) '(1)))
+        > (vector-sort! v2 < 1 3 #:key car)
+        > v2
+        '#((4) (2) (3) (1))
+
+4.13 Hash Tables
+    (make-hash [assocs])
+        Creates a mutable hash table that holds keys strongly.
+    (hash-set*! hash key v ... ...)
+        Maps each key to each v in hash
+    (hash-ref hash key [failure-result])
+        Returns the value for key in hash.
+    (hash-ref-key hash key [failure-result])
+        Returns the key held by hash that is equivalent to key according to hash’s key-comparison function.
+
+    > (define original-key "hello")
+    > (define key-copy (string-copy original-key))
+    > (equal? original-key key-copy)
+    #t
+    > (eq? original-key key-copy)
+    #f
+    > (define table (make-hash))
+    > (hash-set! table original-key 'value)
+    > (eq? (hash-ref-key table "hello") original-key)
+    #t
+    > (eq? (hash-ref-key table "hello") key-copy)
+    #f
+
 4.17 Procedures
   apply: (apply proc v ... lst #:<kw> kw-arg ...)
           the last argument is used as a list of arguments for append. We could also have exactly one
@@ -357,6 +477,30 @@
         > (define sum? (curry member '+))
   curryr: (curryr proc v ...+) Like curry, except that the arguments are collected in the opposite direction
         > (define in? (curryr member lst))
+
+5.1 Struct
+    (struct id maybe-supper (field ...)
+        struct-option ...)
+    maybe-supper = | supper-id
+    field = field-d | [field-id field-option ...]
+    struct-option = 
+        #:mutable
+        #:super
+    field-option =
+        #:mutable
+        #:auto    
+
+
+    ```racket
+    (define-struct student (name [gpa #:mutable]))
+    (define s (student "hello" 4.0))
+    (student-name s)
+    (set-student-gpa! s 3.9)
+
+    (match s
+      [(student name gpa) gpa]
+      [_ "error"])
+    ```
 
 9. Pattern Matching
   match: (match val-expr clause ...)
