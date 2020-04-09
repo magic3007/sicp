@@ -294,7 +294,7 @@
 4.9.4 List Filtering
   filter: (filter pred lst)
   filter-not: (filter-not pred lst) Like filter, but the meaning of the pred predicate is reversed
-  remove: (remove v lst [proc])
+  remove: (remove v lst [proc]) omitting the first element of lst that is equal to v using the comparison procedure proc
     remq: (remq v lst) = (remove v lst eq?)
     remv: (remv v lst) = (remove v list eqv?) 
   remove*, remq*, remv*: (remove* v-lst lst [proc]) like remove, but remove from list
@@ -435,13 +435,14 @@
         '#((4) (2) (3) (1))
 
 4.13 Hash Tables
-    (make-hash [assocs])
+    make-hash: (make-hash [assocs])
         Creates a mutable hash table that holds keys strongly.
-    (hash-set*! hash key v ... ...)
+    hash-set!: (hash-set! hash key v)    
+    hash-set*!: (hash-set*! hash key v ... ...)
         Maps each key to each v in hash
-    (hash-ref hash key [failure-result])
+    hash-ref: (hash-ref hash key [failure-result])
         Returns the value for key in hash.
-    (hash-ref-key hash key [failure-result])
+    hash-ref-key: (hash-ref-key hash key [failure-result])
         Returns the key held by hash that is equivalent to key according to hash’s key-comparison function.
 
     > (define original-key "hello")

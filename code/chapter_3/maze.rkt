@@ -100,3 +100,42 @@
         (begin (displayln (solve)) (loop (sub1 m))))))
 
 (readcases)
+
+
+;
+#lang racket
+(define (Case)
+  (let ((N (read)) (M (read)) (K (read)))
+    (define (load i)
+      (define (load-line i) (if (= i M) '() (cons (read) (load-line (+ i 1)))))
+      (if (= i N) '() (cons (load-line 0) (load (+ i 1)))))
+    (let ((B (load 0)))
+      (define (elem x y) (list-ref (list-ref B (- x 1)) (- y 1)))
+      (define (H x y k) (+ k (* 100 (+ y (* 100 x)))))
+      (define (SH t) (if (null? t) '() (let ((t (car t)))(list (H (car t) (cadr t) (caddr t))))))
+      (define (GS t dx dy S)
+        (let ((x (car t)) (y (cadr t)) (k (caddr t)) (s (cadddr t)))
+          (let ((tx (+ x dx)) (ty (+ y dy)))
+            (if (and (<= 1 tx) (<= tx N) (<= 1 ty) (<= ty M))
+                (let ((e (elem tx ty)))
+                  (let ((tk (if (and (eq? e 'M) (> k 0)) (- k 1) k)))
+                    (if (and (not (memq (H tx ty tk) S)) (or (eq? e 'B) (and (eq? e 'M) (> k 0))))
+                        (list (list tx ty tk (+ s 1)))
+                        '())))
+                '()))))
+      (define (bfs q S)
+        (if (null? q)
+            "inf"
+            (let ((t (car q)) (rq (cdr q)))
+              (let ((x (car t)) (y (cadr t)) (k (caddr t)) (s (cadddr t)))
+                (if (and (= x N) (= y M))
+                    s
+                    (let ((s1 (GS t 0 1 S)) (s2 (GS t 0 -1 S)) (s3 (GS t 1 0 S)) (s4 (GS t -1 0 S)))
+                      (let ((Ls (append s1 s2 s3 s4)) (Lh (append (SH s1) (SH s2) (SH s3) (SH s4))))
+                        (bfs (append rq Ls) (append S Lh)))))))))
+      (let ((init-state (list 1 1 K 0))) (bfs (list init-state) (SH (list init-state)))))))
+
+(define (Test n)
+  (cond ((> n 0) (begin (displayln (Case)) (Test (- n 1))))))
+
+(Test (read))
