@@ -114,6 +114,34 @@
     [(datum2...) then-body2 ...+]
     [else else-body ...+]
 
+3.14 Definitions: define, define-syntax, ...
+    - define
+        : (define id expr)
+        : (define (head args) body ...+)
+
+    - define-values : (define-values (id ...) expr)
+        > (define-values () (values))
+        > (define-values (x y z) (values 1 2 3))
+        > z
+        3  
+    - define-syntax
+        : (define-syntax id expr)
+        : (define-syntax (head args) body ...+) 
+
+        > (define-syntax foo
+            (syntax-rules ()
+              ((_ a ...)
+               (printf "~a\n" (list a ...)))))
+        > (foo 1 2 3 4)
+        (1 2 3 4)
+
+        > (define-syntax (bar syntax-object)
+            (syntax-case syntax-object ()
+              ((_ a ...)
+               #'(printf "~a\n" (list a ...)))))
+        > (bar 1 2 3 4)
+        (1 2 3 4)
+
 3.16 Guarded Evaluation: when and unless
     when: (when test-expr body ...+)
         similar to "if", but without else
@@ -165,10 +193,41 @@
             (display i))
         13
 
+    - for* : (for* (for-clause ...) body-or-break ... body)
+            Like for, but with an implicit #:when #t between each pair of for-clauses, so that all sequence iterations are nested.
+            > for* ([i '(1 2)]
+                     [j "ab"])
+                (display (list i j)))
+            (1 a)(1 b)(2 a)(2 b)            
     - for/sum: (for/sum (for-clause ...) body-or-break ... body)
         Iterates like for, but each result of the last body is accumulated into a result with +.
         > (for/sum ([i '(1 2 3 4)]) i) 
         10
+
+    - for/list: (for/list (for-clause ...) body-or-break ... body)
+        Iterates like for, but that the last expression in the bodys must produce a single value, and the result of the for/list expression is a list of the results in order.
+        > (for/list ([i '(1 2 3)]
+                     [j "abc"]
+                     #:when (odd? i)
+                     [k #(#t #f)])
+            (list i j k))
+        '((1 #\a #t) (1 #\a #f) (3 #\c #t) (3 #\c #f))
+
+        > (for/list ([i '(1 2 3)]
+                     [j "abc"]
+                     #:break (not (odd? i))
+                     [k #(#t #f)])
+            (list i j k))
+        '((1 #\a #t) (1 #\a #f))
+
+        > (for/list () 'any)
+        '(any)
+
+        > (for/list ([i '()])
+            (error "doesn't get here"))
+        '()
+    - for*/list: (for*/list (for-clause ...) body-or-break ... body) 
+     Like for/list, etc., but with the implicit nesting of for*.
 
 4.2.1 Number Types
   even? odd?
@@ -434,6 +493,46 @@
         > v2
         '#((4) (2) (3) (1))
 
+4.12.2 Streams
+    - empty-stream : stream? A stream with no elements.
+    - stream? : (stream? v)
+    - stream-empty? : (stream-empty? v)
+    - stream-first  : (stream-first s)
+    - stream-rest : (stream-rest s) → stream?      
+    - stream-cons : (stream-cons first-expr rest-expr)
+    - stream : (stream expr ...) A shorthand for nested stream-conses ending with empty-stream.
+    - stream* :  (stream* expr ... rest-expr) A shorthand for nested stream-conses, but the rest-expr must be a stream, 
+                and it is used as the rest of the stream instead of empty-stream. Similar to list* but for streams.
+    - in-stream : (in-stream s) (in-stream s) → sequence?           
+                Returns a sequence that is equivalent to s.
+                An in-stream application can provide better performance 
+                for streams iteration when it appears directly in a for clause.
+    - stream->list : (stream->list s) → list?            
+    - stream-length: (stream-length s) If s is infinite, this function does not terminate!
+    - stream-ref: (stream-ref s i)
+    - stream-tail: (stream-tail s i) Returns a stream equivalent to s, except that the first i elements are omitted.
+    - stream-take: (stream-take s i) Returns a stream of the first i elements of s.
+    - stream-append: (stream-append s ...) Returns a stream that contains all elements of each stream in the order they appear in the original streams.
+    - stream-map: (stream-map f s) The new stream is constructed lazily.
+    - stream-andmap: (stream-andmap f s) Returns #t if f returns a true result on every element of s.
+    - stream-ormap:  (stream-ormap f s) Returns #t if f returns a true result on some element of s. 
+    - stream-for-each : (stream-for-each f s)
+    - stream-fold : (stream-fold f i s) Folds f over each element of s with i as the initial accumulator.
+    - stream-count : (stream-count f s) Returns the number of elements in s for which f returns a true result.
+    - stream-filter : (stream-filter f s)
+    - stream-and-between : (stream-and-between s e) Returns a stream whose elements are the elements of s, but with e between each pair of elements in s. The new stream is constructed lazily.
+    - for/stream: Iterates like for/list, respectively, but the results are lazily collected into a stream instead of a list.
+    - for*/stream: Iterates for*/list, respectively, but the results are lazily collected into a stream instead of a list.
+        > (for/stream ([i '(1 2 3)]) (* i i))
+        #<stream>
+        > (stream->list (for/stream ([i '(1 2 3)]) (* i i)))
+        '(1 4 9)
+        > (stream-ref (for/stream ([i '(1 2 3)]) (displayln i) (* i i)) 1)
+        2
+        4
+        > (stream-ref (for/stream ([i (in-naturals)]) (* i i)) 25)
+        625
+
 4.13 Hash Tables
     make-hash: (make-hash [assocs])
         Creates a mutable hash table that holds keys strongly.
@@ -457,6 +556,15 @@
     #t
     > (eq? (hash-ref-key table "hello") key-copy)
     #f
+
+4.14.1 Sequences
+    - in-range 
+        : (in-range end) → stream?
+        : (in-range start end [step]) → stream?
+       Returns a sequence (that is also a stream) whose elements are numbers.
+
+    - in-naturals : (in-naturals [start]) → stream?
+        Returns an infinite sequence (that is also a stream) of exact integers starting with start
 
 4.17 Procedures
   apply: (apply proc v ... lst #:<kw> kw-arg ...)
@@ -677,6 +785,8 @@
        (best-color))
       (best-color)
 
+12.1 Pattern-Based Syntax Matching
+    
 13.5 Writing
     There are at least three ways to output data (to the console).
     - `display` removes all quotation marks and string delimiters
