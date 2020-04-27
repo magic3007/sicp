@@ -204,6 +204,15 @@
         > (for/sum ([i '(1 2 3 4)]) i) 
         10
 
+    - for/last: (for/last (for-clause ...) body-or-break ... body) Iterates like for, but the for/last result is the (single) result of the last evaluation of body.
+        > (for/last ([i '(1 2 3 4 5)]
+                          #:when (even? i))
+                 (number->string i))
+            "4"
+    - for/and: Iterates like for, but when last expression of body produces #f, then iteration terminates, and the result of the for/and expression is #f.
+
+    - for/or:  Iterates like for, but when last expression of body produces a value other than #f, then iteration terminates, and the result of the for/or expression is the same (single) value.
+           
     - for/list: (for/list (for-clause ...) body-or-break ... body)
         Iterates like for, but that the last expression in the bodys must produce a single value, and the result of the for/list expression is a list of the results in order.
         > (for/list ([i '(1 2 3)]

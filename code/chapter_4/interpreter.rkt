@@ -2,8 +2,6 @@
 
 (require scheme/mpair)
 
-(define mcaar (compose1 mcar mcar))
-
 (define (map-second proc lst)
   (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
 
@@ -74,12 +72,8 @@
 
 (define (analyze-begin bodys)
   (let ([fbodys (map analyze bodys)])
-    (define (scan e)
-      (let* ([fi (first e)]
-             [re (rest e)])
-      (if (null? re) fi
-          (lambda (env) (fi env) ((scan re) env)))))
-    (scan fbodys)))
+    (lambda (env)
+      (for/last ([x fbodys]) (x env)))))
 
 (define (analyze-set! sym exp)
   (let ([fexp (analyze exp)])
@@ -108,21 +102,12 @@
 (define (analyze-and bodys)
   (let ([fbodys (map analyze bodys)])
     (lambda (env)
-      (define (scan e)
-        (let ([rv ((first e) env)])
-          (if rv
-              (if (null? (rest e)) rv (scan (rest e)))
-              #f)))
-      (scan fbodys))))
+      (for/and ([x fbodys]) (x env)))))
 
 (define (analyze-or bodys)
   (let ([fbodys (map analyze bodys)])
     (lambda (env)
-      (define (scan e)
-        (let ([rv ((first e) env)])
-          (if rv rv
-              (if (null? (rest e)) #f (scan (rest e))))))
-      (scan fbodys))))
+      (for/or ([x fbodys]) (x env)))))
 
 (define (analyze-if . args)
   (match (map analyze args)
