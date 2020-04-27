@@ -437,14 +437,9 @@
 
 ```racket
 (require scheme/mpair)
-(define list mlist)
-(define cdr mcdr)
-(define car mcar)
-(define set-car! set-mcar!)
-(define set-cdr! set-mcdr!)
-(define cons mcons)
-(define assoc massoc)
+(require compatibility/mlist)
 ```
+  - mmap: like map
 
 4.11 Vectors
 
@@ -799,4 +794,16 @@
       '(a "azer" 3)
       (a "azer" 3)
 
+14.1 Namespaces
+  - current-namespace: (current-namespace n) A parameter that determines the current namespace.
+  - make-base-namespace: (make-base-namespace) → namespace? Creates a new namespace like make-empty-namespace, but with racket/base attached and required into the top-level environment.
+
+14.2 Evaluation and Compilation
+  - eval: (eval top-level-form [namespace]) → any
+            top-level-form : any/c
+            namespace : namespace? = (current-namespace)
+        > (eval '(+ 3 4) (make-base-namespace))
+        
+        > (current-namespace (make-base-namespace))
+        > (eval '(+ 3 4))   
 |#
