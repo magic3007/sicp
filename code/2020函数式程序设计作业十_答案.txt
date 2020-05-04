@@ -1,0 +1,1895 @@
+****1: 简易scheme解释器
+by 1700013005
+#lang racket
+(require r5rs)
+(define env (scheme-report-environment 5))
+(eval '(define false #f) env)
+(eval '(define true #t) env)
+(define (T)
+  (let ((x (read)))
+    (if (eq? x eof)
+        (void)
+        (let ((r (eval x env)))
+          (if (equal? r (void))
+              (void)
+              (eval `(begin (display (quote ,r)) (newline)) env))
+          (T)))))
+(T)
+
+by 1800012808
+#lang racket
+(require r5rs)
+(define env (make-base-namespace))
+(eval '(define true #t) env)
+(eval '(define false #f) env)
+(define (myloop)
+  (let ((a (read)))
+    (if (eq? a eof)
+        (void)
+        (begin
+          (let ((res (eval a env)))
+            (if (not (eq? res (void)))
+                (displayln res)
+                (void)))
+          (myloop)))))
+(myloop)
+
+
+by 1700012751
+#lang racket
+
+(require scheme/mpair)
+
+(define mcaar (compose1 mcar mcar))
+
+(define (map-second proc lst)
+  (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
+
+; ======================================================================
+
+(define (make-frame syms vals)
+  (mmap mcons (list->mlist syms) (list->mlist vals)))
+
+(define (make-frame-from-pairs pairs)
+  (make-frame (map first pairs) (map second pairs)))
+
+(define (frame-look-up frame sym)
+  (let ([rv (massoc sym frame)])
+    (if rv (mcdr rv) (void)))) 
+
+(define (frame-set-val! frame sym val)
+  (cond [(null? frame) #f]
+        [(eq? sym (mcaar frame)) (set-mcdr! (mcar frame) val) #t]
+        [else (frame-set-val! (mcdr frame) sym val)]))
+
+; ======================================================================
+
+(struct EnvType ([frame #:mutable] ex-env))
+
+(define (env-look-up env sym)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-look-up (EnvType-frame env) sym)])
+        (if (eq? rv (void))
+            (env-look-up (EnvType-ex-env env) sym)
+            rv))))
+
+(define (env-define env sym val)
+  (set-EnvType-frame! env
+                       (mcons (mcons sym val) (EnvType-frame env))))
+
+(define (env-set-val! env sym val)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-set-val! (EnvType-frame env) sym val)])
+        (if rv rv
+            (env-set-val! (EnvType-ex-env env) sym val)))))
+
+; ======================================================================
+
+(define (syms->frame syms)
+  (if (null? syms) '()
+      (mmap (lambda (sym)
+              (if (pair? sym)
+                  (mcons (car sym) (cadr sym))
+                  (mcons sym (eval sym (make-base-namespace)))))
+            (list->mlist syms))))
+
+(define primitive-frame
+  (syms->frame
+   `(+ - > < / * = >= <= quotient remainder sqrt cons car cdr
+       eq? number? symbol? not list cadr caddr error length displayln
+       append pair? null? (false #f) (true #t))))
+
+(define primitive-env (EnvType primitive-frame '()))
+
+; ======================================================================
+
+(define (analyze-begin bodys)
+  (let ([fbodys (map analyze bodys)])
+    (define (scan e)
+      (let* ([fi (first e)]
+             [re (rest e)])
+      (if (null? re) fi
+          (lambda (env) (fi env) ((scan re) env)))))
+    (scan fbodys)))
+
+(define (analyze-set! sym exp)
+  (let ([fexp (analyze exp)])
+    (lambda (env)
+      (env-set-val! env sym (fexp env))
+      (void))))
+
+(define (analyze-define sym analyzed-code)
+  (lambda (env)
+    (env-define env sym (analyzed-code env))))
+
+(struct ProcedureType (syms fbody env))
+
+(define (analyze-lambda syms bodys)
+  (let ([fbody (analyze-begin bodys)])
+    (lambda (env)
+      (ProcedureType syms fbody env))))
+
+(define (analyze-apply proc args)
+  (let ([fproc (analyze proc)]
+        [fargs (map analyze args)])
+    (lambda (env)
+      (let ([vals (map (lambda (x) (x env)) fargs)])
+        (match (fproc env)
+          [(ProcedureType syms fbody proc-env)
+           (fbody (EnvType (make-frame syms vals) proc-env))]
+          [primitive-proc (apply primitive-proc vals)]
+          [_ (error "Error: analyze-apply -- unknown proc")])))))
+
+(define (analyze-and bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv
+              (if (null? (rest e)) rv (scan (rest e)))
+              #f)))
+      (scan fbodys))))
+
+(define (analyze-or bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv rv
+              (if (null? (rest e)) #f (scan (rest e))))))
+      (scan fbodys))))
+
+(define (analyze-if . args)
+  (match (map analyze args)
+    [`(,fpred ,fconseq ,falter)
+     (lambda (env)
+       (if (fpred env) (fconseq env) (falter env)))]))
+
+(define (analyze-cond pairs)
+  (define (foo pa)
+    (match pa
+      [`(else . ,bodys) `(else  ,(analyze-begin bodys))]
+      [`(,pred) (analyze pred)]
+      [`(,pred . ,bodys) `(,(analyze pred)  ,(analyze-begin bodys))]
+      [_ (error "Error: analyze-cond")]))
+  (let ([fpairs (map foo pairs)])
+    (lambda (env)
+      (define (scan e)
+        (if (null? e) (void)
+            (match (first e)
+              [`(else ,fbody) (fbody env)]
+              [`(,fpred ,fbody) (if (fpred env) (fbody env) (scan (rest e)))]
+              [fpred (let ([rv (fpred env)]) (if rv rv (scan (rest e))))])))
+      (scan fpairs))))
+
+(define (analyze-let pairs bodys)
+  (let ([fpairs (map-second analyze pairs)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (fbody (EnvType
+              (make-frame-from-pairs (map-second (lambda (x) (x env)) fpairs))
+               env)))))
+
+(define (self-evaluating? e)
+  (or (number? e) (string? e) (boolean? e)))
+
+(define (analyze e)
+  (match e
+    [e #:when (self-evaluating? e) (lambda (env) e)]
+    [`',x (lambda (env) x)]
+    [`(set! ,sym ,exp) (analyze-set! sym exp)]
+    [`(begin . ,bodys) (analyze-begin bodys)]
+    [`(lambda ,args . ,bodys) (analyze-lambda args bodys)]
+    [`(apply ,proc ,args) (analyze-apply proc args)]
+    [`(and . ,bodys) (analyze-and bodys)]
+    [`(or . ,bodys) (analyze-or bodys)]
+    [`(cond . ,pairs) (analyze-cond pairs)]
+    [`(let ,pairs . ,bodys) (analyze-let pairs bodys)]
+    [`(if ,pred ,conseq ,alter) (analyze-if pred conseq alter)]
+    [`(define (,proc . ,args) . ,bodys)
+     (analyze-define proc (analyze-lambda args bodys))]
+    [`(define ,sym ,exp) (analyze-define sym (analyze exp))]
+    [`(,proc . ,args) (analyze-apply proc args)]
+    [x (lambda (env) (env-look-up env x))]))
+
+(define (my-eval e)
+  ((analyze e) primitive-env))
+
+; ======================================================================
+
+(define (driver)
+  (let ([a (read)])
+    (when (not (eq? a eof))
+      (let ([rv (my-eval a)])
+        (when (not (eq? rv (void))) (displayln rv))
+        (driver)))))
+(driver)
+
+by 1900012959(lny)
+#lang racket
+;(require r5rs)
+
+(define (mylist . args)
+  (define (f1 x)
+    (if (null? x) '() (mcons (car x) (f1 (cdr x))))
+    )
+  (display args)
+  (f1 args)
+  )
+(define (self-evaluating? x) (or (number? x) (string? x) (boolean? x)))
+(define (variable? x) (symbol? x))
+(define (taggedlist? x y) (and (pair? x) (eq? y (car x))))
+(define (quoted? x) (taggedlist? x 'quote))
+(define (text-of-quotation x) (cadr x))
+(define (tagisset? x) (taggedlist? x 'set!))
+(define (tagisdefine? x) (taggedlist? x 'define))
+(define (isif? x) (taggedlist? x 'if))
+(define (islambda? x) (taggedlist? x 'lambda))
+(define (isbegin? x) (taggedlist? x 'begin))
+(define (iscond? x) (taggedlist? x 'cond))
+(define (application? x) (pair? x))
+(define (lamargs x) (cadr x))
+(define (lambody x) (cddr x))
+(define (make-procedure args bodys env)
+  (list 'procedure args bodys env))
+(define (procbodys x) (caddr x))
+(define (procparas x) (cadr x))
+(define (procenv x) (cadddr x))
+(define (eval-sequence x y)
+  (if (null? (cdr x)) (myeval (car x) y)
+      (begin (myeval (car x) y) (eval-sequence (cdr x) y))
+      )
+  )
+(define (eval-set! x env)
+  (define (f2 varname varval setname setval)
+    (if (null? varname) '()
+        (if (eq? (car varname) setname) (cons setval (cdr varval))
+            (let ([res (f2 (cdr varname) (cdr varval) setname setval)])
+              (if (null? res) '() (cons (car varval) res))
+            )
+        )
+    ))
+  (define (f1 setname setval nowenv)
+    (if (null? nowenv) (error "unbound variable" x env)
+        (let ([res (f2 (mcar(car nowenv)) (mcdr(car nowenv)) setname setval)])
+          (if (null? res)
+              (f1 setname setval (cdr nowenv))
+              (set-mcdr! (car nowenv) res)
+              )
+          )
+        ))
+  (f1 (cadr x) (myeval (caddr x) env) env)
+  )
+(define (bindvaltoframe! x y z)
+  ;(displayln z)
+  (set-mcar! z (cons x (mcar z)))
+  (set-mcdr! z (cons y (mcdr z)))
+  )
+(define (eval-define x env)
+  (if (variable? (cadr x))
+      (bindvaltoframe! (cadr x) (eval-sequence (cddr x) env) (car env))
+      (bindvaltoframe! (caadr x) (make-procedure (cdadr x) (cddr x) env) (car env))
+      )
+  )
+(define (lookup x env)
+  (define (f1 varname varval outenv)
+    ;(if (eq? empty-env outenv) (void) (displayln (list x varname varval)))
+    (if (null? varname)
+        (if (null? outenv) (error "no such variable" x env)
+            (f1 (mcar(car outenv)) (mcdr(car outenv)) (cdr outenv))
+            )
+        (if (eq? (car varname) x) (car varval)
+            (f1 (cdr varname) (cdr varval) outenv)
+            )
+        )
+    )
+  (f1 (mcar(car env)) (mcdr(car env)) (cdr env))
+  )
+(define (eval-if x env)
+  (if (myeval (cadr x) env)
+      (myeval (caddr x) env)
+      (if (null? (cdddr x)) #f (myeval (cadddr x) env))
+      )
+  )
+(define (beginbodys x) (cdr x))
+(define (eval-cond x env)
+  (define (f1 clauses)
+    (if (null? clauses) (void);[(pred) (body)()()][]
+        (if (eq? 'else (caar clauses))
+            (eval-sequence (cdar clauses) env)
+            (let [(t (myeval (caar clauses) env))]
+              (if t
+                  (if (null? (cdar clauses)) t
+                      (eval-sequence (cdar clauses) env))
+                  (f1 (cdr clauses))
+                  ))
+            )
+        ))
+  (f1 (cdr x))
+  )
+(define (operator x) (car x))
+(define (operant x) (cdr x))
+(define (list-of-val x env)
+  (if (null? x) '()
+      (let ([y (myeval (car x) env)])
+        (cons y (list-of-val (cdr x) env))
+        ))
+  )
+(define (eval-and clauses env)
+  (define (f1 x)
+    (let ([t (myeval (car x) env)])
+      ;(displayln(list t x (null? (cdr x))))
+      (if t (if (null? (cdr x)) t (f1 (cdr x)))
+          #f)
+      ))
+  (if (null? clauses) #t
+      (f1 clauses))
+  )
+(define (eval-or clauses env)
+  (define (f1 x)
+    (let ([t (myeval (car x) env)])
+      (if t t
+          (if (null? (cdr x)) #f (f1 (cdr x))))
+      )
+    )
+  (if (null? clauses) #f
+      (f1 clauses))
+  )
+(define (islet? x) (taggedlist? x 'let))
+(define (eval-let x env)
+  (define (f1 ls res1 res2)
+    (if (null? ls) (mcons res1 res2)
+        (f1 (cdr ls) (cons (caar ls) res1) (cons (myeval (cadar ls) env) res2))
+        ))
+  (eval-sequence (cddr x) (cons (f1 (cadr x) '() '()) env))
+  )
+(define (myeval x env)
+  ;(displayln (list 'eval x))
+  (cond
+    [(self-evaluating? x) x]
+    [(variable? x) (lookup x env)]
+    [(quoted? x) (text-of-quotation x)]
+    [(tagisset? x) (eval-set! x env)]
+    [(tagisdefine? x) (eval-define x env)]
+    [(isif? x) (eval-if x env)]
+    [(islambda? x) (make-procedure (lamargs x) (lambody x) env)]
+    [(isbegin? x) (eval-sequence (beginbodys x) env)]
+    [(iscond? x) (eval-cond x env)]
+    [(islet? x) (eval-let x env)]
+    [(taggedlist? x 'and) (eval-and (cdr x) env)]
+    [(taggedlist? x 'or) (eval-or (cdr x) env)]
+    [(application? x) (myapply (myeval (operator x) env) (list-of-val (operant x) env))]
+    [else (error "Unknown Expression" x env)]
+    )
+  )
+(define empty-env (list (mcons '(true false) (list #t #f))))
+(define (childenv x y env)
+  (cons (mcons x y) env))
+(define (fakemap f x)
+  (if (null? x) '()
+      (cons (myapply f (list (car x))) (fakemap f (cdr x)))
+      )
+  )
+(define primitive-procedures
+  (list
+   (list 'display display)(list 'displayln displayln)(list 'newline newline)(list 'read read)
+   (list 'number? number?)(list 'string? string?)(list 'symbol? symbol?)(list 'eq? eq?)(list 'equal? equal?)(list '= =)
+   (list '+ +)(list '- -)(list '* *)(list '/ /)(list '> >)(list '>= >=)(list '< <)(list '<= <=)
+   (list 'remainder remainder)
+   (list 'sqrt sqrt)
+   (list 'not not)
+   (list 'eof eof)
+   (list 'error error)
+   (list 'append append)
+   (list 'map fakemap)
+   (list 'length length)
+   (list 'car car)(list 'caar caar)(list 'caaar caaar)(list 'caaaar caaaar)(list 'caaadr caaadr)(list 'caadr caadr)(list 'caadar caadar)(list 'caaddr caaddr)(list 'cadr cadr)(list 'cadar cadar)(list 'cadaar cadaar)(list 'cadadr cadadr)(list 'caddr caddr)(list 'caddar caddar)(list 'cadddr cadddr)(list 'cdr cdr)(list 'cdar cdar)(list 'cdaar cdaar)(list 'cdaaar cdaaar)(list 'cdaadr cdaadr)(list 'cdadr cdadr)(list 'cdadar cdadar)(list 'cdaddr cdaddr)(list 'cddr cddr)(list 'cddar cddar)(list 'cddaar cddaar)(list 'cddadr cddadr)(list 'cdddr cdddr)(list 'cdddar cdddar)(list 'cddddr cddddr)
+   ;(list 'car car)
+   ;(list 'cdr cdr)
+   (list 'cons cons)
+   (list 'list list)
+   (list 'null? null?)
+   (list 'pair? pair?)
+   (list 'list? list?)
+   )
+  )
+(define primitive-procedure-names (map car primitive-procedures))
+(define primitive-procedure-objects (map (lambda (t) (cons 'primitive (cdr t)))  primitive-procedures))
+(define (primitive-procedure? x) (taggedlist? x 'primitive))
+(define (primitive-implement x) (cadr x))
+(define global-env (childenv primitive-procedure-names primitive-procedure-objects empty-env))
+(define (compound-procedure? x) (taggedlist? x 'procedure))
+
+(define (myapply proc args)
+  (cond
+    ([primitive-procedure? proc] (apply (primitive-implement proc) args))
+    ([compound-procedure? proc] (eval-sequence (procbodys proc) (childenv (procparas proc) args (procenv proc))))
+    (else (error "Unknown Procedure" proc))
+    )
+  )
+(define (myloop)
+  (let ((a (read)))
+    (if (eq? a eof)
+        (void)
+        (let ([res (myeval a global-env)])
+          (if (eq? (void) res) (void) (displayln res))
+          (myloop))
+          )
+        )
+  )
+(myloop)
+
+****2: 支持新式cond语句的scheme解释器
+by 1700013005
+#lang racket
+(require r5rs)
+(define env (scheme-report-environment 5))
+(eval '(define false #f) env)
+(eval '(define true #t) env)
+(define (T)
+  (let ((x (read)))
+    (if (eq? x eof)
+        (void)
+        (let ((r (eval x env)))
+          (if (equal? r (void))
+              (void)
+              (eval `(begin (display (quote ,r)) (newline)) env))
+          (T)))))
+(T)
+
+by 1700012751
+#lang racket
+
+(require scheme/mpair)
+
+(define mcaar (compose1 mcar mcar))
+
+(define (map-second proc lst)
+  (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
+
+; ======================================================================
+
+(define (make-frame syms vals)
+  (mmap mcons (list->mlist syms) (list->mlist vals)))
+
+(define (make-frame-from-pairs pairs)
+  (make-frame (map first pairs) (map second pairs)))
+
+(define (frame-look-up frame sym)
+  (let ([rv (massoc sym frame)])
+    (if rv (mcdr rv) (void)))) 
+
+(define (frame-set-val! frame sym val)
+  (cond [(null? frame) #f]
+        [(eq? sym (mcaar frame)) (set-mcdr! (mcar frame) val) #t]
+        [else (frame-set-val! (mcdr frame) sym val)]))
+
+; ======================================================================
+
+(struct EnvType ([frame #:mutable] ex-env))
+
+(define (env-look-up env sym)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-look-up (EnvType-frame env) sym)])
+        (if (eq? rv (void))
+            (env-look-up (EnvType-ex-env env) sym)
+            rv))))
+
+(define (env-define env sym val)
+  (set-EnvType-frame! env
+                       (mcons (mcons sym val) (EnvType-frame env))))
+
+(define (env-set-val! env sym val)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-set-val! (EnvType-frame env) sym val)])
+        (if rv rv
+            (env-set-val! (EnvType-ex-env env) sym val)))))
+
+; ======================================================================
+
+(define (syms->frame syms)
+  (if (null? syms) '()
+      (mmap (lambda (sym)
+              (if (pair? sym)
+                  (mcons (car sym) (cadr sym))
+                  (mcons sym (eval sym (make-base-namespace)))))
+            (list->mlist syms))))
+
+(define primitive-frame
+  (syms->frame
+   `(+ - > < / * = >= <= quotient remainder sqrt cons car cdr assoc
+       eq? number? symbol? not list cadr caddr error length displayln
+       append pair? null? (false #f) (true #t))))
+
+(define primitive-env (EnvType primitive-frame '()))
+
+; ======================================================================
+
+(define (call-fproc fproc vals)
+  (lambda (env)
+    (match (fproc env)
+      [(ProcedureType syms fbody proc-env)
+       (fbody (EnvType (make-frame syms vals) proc-env))]
+      [primitive-proc (apply primitive-proc vals)]
+      [_ (error "Error: analyze-apply -- unknown proc")])))
+
+(define (analyze-begin bodys)
+  (let ([fbodys (map analyze bodys)])
+    (define (scan e)
+      (let* ([fi (first e)]
+             [re (rest e)])
+      (if (null? re) fi
+          (lambda (env) (fi env) ((scan re) env)))))
+    (scan fbodys)))
+
+(define (analyze-set! sym exp)
+  (let ([fexp (analyze exp)])
+    (lambda (env)
+      (env-set-val! env sym (fexp env))
+      (void))))
+
+(define (analyze-define sym analyzed-code)
+  (lambda (env)
+    (env-define env sym (analyzed-code env))))
+
+(struct ProcedureType (syms fbody env))
+
+(define (analyze-lambda syms bodys)
+  (let ([fbody (analyze-begin bodys)])
+    (lambda (env)
+      (ProcedureType syms fbody env))))
+
+(define (analyze-apply proc args)
+  (let ([fproc (analyze proc)]
+        [fargs (map analyze args)])
+    (lambda (env)
+      (let ([vals (map (lambda (x) (x env)) fargs)])
+        ((call-fproc fproc vals) env)))))
+
+(define (analyze-and bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv
+              (if (null? (rest e)) rv (scan (rest e)))
+              #f)))
+      (scan fbodys))))
+
+(define (analyze-or bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv rv
+              (if (null? (rest e)) #f (scan (rest e))))))
+      (scan fbodys))))
+
+(define (analyze-if . args)
+  (match (map analyze args)
+    [`(,fpred ,fconseq ,falter)
+     (lambda (env)
+       (if (fpred env) (fconseq env) (falter env)))]))
+
+(define (analyze-cond pairs)
+  (define (foo pa)
+    (match pa
+      [`(else . ,bodys) `(else  ,(analyze-begin bodys))]
+      [`(,test => ,recipient) `(,(analyze test) => ,(analyze recipient))]
+      [`(,pred . ,bodys) #:when (not (null? bodys)) `(,(analyze pred)  ,(analyze-begin bodys))]
+      [`(,pred) (analyze pred)]
+      [_ (error "Error: analyze-cond")]))
+  (let ([fpairs (map foo pairs)])
+    (lambda (env)
+      (define (scan e)
+        (if (null? e) (void)
+            (match (first e)
+              [`(else ,fbody) (fbody env)]
+              [`(,ftest => ,frecipient) (let ([rv (ftest env)])
+                                          (if rv
+                                              ((call-fproc frecipient `(,rv)) env)
+                                              (scan (rest e))))]
+              [`(,fpred ,fbody) (if (fpred env) (fbody env) (scan (rest e)))]
+              [fpred (let ([rv (fpred env)]) (if rv rv (scan (rest e))))])))
+      (scan fpairs))))
+
+(define (analyze-let pairs bodys)
+  (let ([fpairs (map-second analyze pairs)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (fbody (EnvType
+              (make-frame-from-pairs (map-second (lambda (x) (x env)) fpairs))
+               env)))))
+
+(define (self-evaluating? e)
+  (or (number? e) (string? e) (boolean? e)))
+
+(define (analyze e)
+  (match e
+    [e #:when (self-evaluating? e) (lambda (env) e)]
+    [`',x (lambda (env) x)]
+    [`(set! ,sym ,exp) (analyze-set! sym exp)]
+    [`(begin . ,bodys) (analyze-begin bodys)]
+    [`(lambda ,args . ,bodys) (analyze-lambda args bodys)]
+    [`(apply ,proc ,args) (analyze-apply proc args)]
+    [`(and . ,bodys) (analyze-and bodys)]
+    [`(or . ,bodys) (analyze-or bodys)]
+    [`(cond . ,pairs) (analyze-cond pairs)]
+    [`(let ,pairs . ,bodys) (analyze-let pairs bodys)]
+    [`(if ,pred ,conseq ,alter) (analyze-if pred conseq alter)]
+    [`(define (,proc . ,args) . ,bodys)
+     (analyze-define proc (analyze-lambda args bodys))]
+    [`(define ,sym ,exp) (analyze-define sym (analyze exp))]
+    [`(,proc . ,args) (analyze-apply proc args)]
+    [x (lambda (env) (env-look-up env x))]))
+
+(define (my-eval e)
+  ((analyze e) primitive-env))
+
+; ======================================================================
+
+(define (driver)
+  (let ([a (read)])
+    (when (not (eq? a eof))
+      (let ([rv (my-eval a)])
+        (when (not (eq? rv (void))) (displayln rv))
+        (driver)))))
+(driver)
+
+by 1900012959(lny)
+#lang racket
+(define (self-evaluating? x) (or (number? x) (string? x) (boolean? x)))
+(define (variable? x) (symbol? x))
+(define (taggedlist? x y) (and (pair? x) (eq? y (car x))))
+(define (quoted? x) (taggedlist? x 'quote))
+(define (text-of-quotation x) (cadr x))
+(define (tagisset? x) (taggedlist? x 'set!))
+(define (tagisdefine? x) (taggedlist? x 'define))
+(define (isif? x) (taggedlist? x 'if))
+(define (islambda? x) (taggedlist? x 'lambda))
+(define (isbegin? x) (taggedlist? x 'begin))
+(define (iscond? x) (taggedlist? x 'cond))
+(define (application? x) (pair? x))
+(define (lamargs x) (cadr x))
+(define (lambody x) (cddr x))
+(define (make-procedure args bodys env)
+  (list 'procedure args bodys env))
+(define (procbodys x) (caddr x))
+(define (procparas x) (cadr x))
+(define (procenv x) (cadddr x))
+(define (eval-sequence x y)
+  (if (null? (cdr x)) (myeval (car x) y)
+      (begin (myeval (car x) y) (eval-sequence (cdr x) y))
+      )
+  )
+(define (eval-set! x env)
+  (define (f2 varname varval setname setval)
+    (if (null? varname) '()
+        (if (eq? (car varname) setname) (cons setval (cdr varval))
+            (let ([res (f2 (cdr varname) (cdr varval) setname setval)])
+              (if (null? res) '() (cons (car varval) res))
+            )
+        )
+    ))
+  (define (f1 setname setval nowenv)
+    (if (null? nowenv) (error "unbound variable" x env)
+        (let ([res (f2 (mcar(car nowenv)) (mcdr(car nowenv)) setname setval)])
+          (if (null? res)
+              (f1 setname setval (cdr nowenv))
+              (set-mcdr! (car nowenv) res)
+              )
+          )
+        ))
+  (f1 (cadr x) (myeval (caddr x) env) env)
+  )
+(define (bindvaltoframe! x y z)
+  ;(displayln z)
+  (set-mcar! z (cons x (mcar z)))
+  (set-mcdr! z (cons y (mcdr z)))
+  )
+(define (eval-define x env)
+  (if (variable? (cadr x))
+      (bindvaltoframe! (cadr x) (eval-sequence (cddr x) env) (car env))
+      (bindvaltoframe! (caadr x) (make-procedure (cdadr x) (cddr x) env) (car env))
+      )
+  )
+(define (lookup x env)
+  (define (f1 varname varval outenv)
+    ;(if (eq? empty-env outenv) (void) (displayln (list x varname varval)))
+    (if (null? varname)
+        (if (null? outenv) (error "no such variable" x env)
+            (f1 (mcar(car outenv)) (mcdr(car outenv)) (cdr outenv))
+            )
+        (if (eq? (car varname) x) (car varval)
+            (f1 (cdr varname) (cdr varval) outenv)
+            )
+        )
+    )
+  (f1 (mcar(car env)) (mcdr(car env)) (cdr env))
+  )
+(define (eval-if x env)
+  (if (myeval (cadr x) env)
+      (myeval (caddr x) env)
+      (if (null? (cdddr x)) #f (myeval (cadddr x) env))
+      )
+  )
+(define (beginbodys x) (cdr x))
+(define (eval-cond x env)
+  (define (f1 clauses)
+    (if (null? clauses) (void);[(pred) => (body)()()][]
+        (if (eq? 'else (caar clauses))
+            (eval-sequence (cdar clauses) env)
+            (let [(t (myeval (caar clauses) env))]
+              (if t
+                  (if (null? (cdar clauses)) t
+                      (if (eq? (cadar clauses) '=>) (myapply (eval-sequence (cddar clauses) env) (list t))
+                          (eval-sequence (cdar clauses) env))
+                      )
+                  (f1 (cdr clauses))
+                  ))
+            )
+        ))
+  (f1 (cdr x))
+  )
+(define (operator x) (car x))
+(define (operant x) (cdr x))
+(define (list-of-val x env)
+  (if (null? x) '()
+      (let ([y (myeval (car x) env)])
+        (cons y (list-of-val (cdr x) env))
+        ))
+  )
+(define (eval-and clauses env)
+  (define (f1 x)
+    (let ([t (myeval (car x) env)])
+      ;(displayln(list t x (null? (cdr x))))
+      (if t (if (null? (cdr x)) t (f1 (cdr x)))
+          #f)
+      ))
+  (if (null? clauses) #t
+      (f1 clauses))
+  )
+(define (eval-or clauses env)
+  (define (f1 x)
+    (let ([t (myeval (car x) env)])
+      (if t t
+          (if (null? (cdr x)) #f (f1 (cdr x))))
+      )
+    )
+  (if (null? clauses) #f
+      (f1 clauses))
+  )
+(define (islet? x) (taggedlist? x 'let))
+(define (eval-let x env)
+  (define (f1 ls res1 res2)
+    (if (null? ls) (mcons res1 res2)
+        (f1 (cdr ls) (cons (caar ls) res1) (cons (myeval (cadar ls) env) res2))
+        ))
+  (eval-sequence (cddr x) (cons (f1 (cadr x) '() '()) env))
+  )
+(define (myeval x env)
+  ;(displayln (list 'eval x))
+  (cond
+    [(self-evaluating? x) x]
+    [(variable? x) (lookup x env)]
+    [(quoted? x) (text-of-quotation x)]
+    [(tagisset? x) (eval-set! x env)]
+    [(tagisdefine? x) (eval-define x env)]
+    [(isif? x) (eval-if x env)]
+    [(islambda? x) (make-procedure (lamargs x) (lambody x) env)]
+    [(isbegin? x) (eval-sequence (beginbodys x) env)]
+    [(iscond? x) (eval-cond x env)]
+    [(islet? x) (eval-let x env)]
+    [(taggedlist? x 'and) (eval-and (cdr x) env)]
+    [(taggedlist? x 'or) (eval-or (cdr x) env)]
+    [(application? x) (myapply (myeval (operator x) env) (list-of-val (operant x) env))]
+    [else (error "Unknown Expression" x env)]
+    )
+  )
+(define empty-env (list (mcons '(true false) (list #t #f))))
+(define (childenv x y env)
+  (cons (mcons x y) env))
+(define (fakemap f x)
+  (if (null? x) '()
+      (cons (myapply f (list (car x))) (fakemap f (cdr x)))
+      )
+  )
+(define primitive-procedures
+  (list
+   (list 'display display)(list 'displayln displayln)(list 'newline newline)(list 'read read)
+   (list 'number? number?)(list 'string? string?)(list 'symbol? symbol?)(list 'eq? eq?)(list 'equal? equal?)(list '= =)
+   (list '+ +)(list '- -)(list '* *)(list '/ /)(list '> >)(list '>= >=)(list '< <)(list '<= <=)
+   (list 'remainder remainder)
+   (list 'sqrt sqrt)
+   (list 'assoc assoc)
+   (list 'not not)
+   (list 'eof eof)
+   (list 'error error)
+   (list 'append append)
+   (list 'map fakemap)
+   (list 'length length)
+   (list 'car car)(list 'caar caar)(list 'caaar caaar)(list 'caaaar caaaar)(list 'caaadr caaadr)(list 'caadr caadr)(list 'caadar caadar)(list 'caaddr caaddr)(list 'cadr cadr)(list 'cadar cadar)(list 'cadaar cadaar)(list 'cadadr cadadr)(list 'caddr caddr)(list 'caddar caddar)(list 'cadddr cadddr)(list 'cdr cdr)(list 'cdar cdar)(list 'cdaar cdaar)(list 'cdaaar cdaaar)(list 'cdaadr cdaadr)(list 'cdadr cdadr)(list 'cdadar cdadar)(list 'cdaddr cdaddr)(list 'cddr cddr)(list 'cddar cddar)(list 'cddaar cddaar)(list 'cddadr cddadr)(list 'cdddr cdddr)(list 'cdddar cdddar)(list 'cddddr cddddr)
+   ;(list 'car car)
+   ;(list 'cdr cdr)
+   (list 'cons cons)
+   (list 'list list)
+   (list 'null? null?)
+   (list 'pair? pair?)
+   (list 'list? list?)
+   )
+  )
+(define primitive-procedure-names (map car primitive-procedures))
+(define primitive-procedure-objects (map (lambda (t) (cons 'primitive (cdr t)))  primitive-procedures))
+(define (primitive-procedure? x) (taggedlist? x 'primitive))
+(define (primitive-implement x) (cadr x))
+(define global-env (childenv primitive-procedure-names primitive-procedure-objects empty-env))
+(define (compound-procedure? x) (taggedlist? x 'procedure))
+
+(define (myapply proc args)
+  (cond
+    ([primitive-procedure? proc] (apply (primitive-implement proc) args))
+    ([compound-procedure? proc] (eval-sequence (procbodys proc) (childenv (procparas proc) args (procenv proc))))
+    (else (error "Unknown Procedure" proc))
+    )
+  )
+(define (myloop)
+  (let ((a (read)))
+    (if (eq? a eof)
+        (void)
+        (let ([res (myeval a global-env)])
+          (if (eq? (void) res) (void) (displayln res))
+          (myloop))
+          )
+        )
+  )
+(myloop)
+
+by 1700012751
+#lang racket
+
+(require scheme/mpair)
+
+(define (map-second proc lst)
+  (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
+
+; ======================================================================
+
+(define (make-frame syms vals)
+  (mmap mcons (list->mlist syms) (list->mlist vals)))
+
+(define (make-frame-from-pairs pairs)
+  (make-frame (map first pairs) (map second pairs)))
+
+(define (frame-look-up frame sym)
+  (let ([rv (massoc sym frame)])
+    (if rv (mcdr rv) (void)))) 
+
+(define (frame-set-val! frame sym val)
+  (let ([rv (massoc sym frame)])
+    (if rv (begin (set-mcdr! rv val) #t) #f)))
+
+; ======================================================================
+
+(struct EnvType ([frame #:mutable] ex-env))
+
+(define (env-look-up env sym)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-look-up (EnvType-frame env) sym)])
+        (if (eq? rv (void))
+            (env-look-up (EnvType-ex-env env) sym)
+            rv))))
+
+(define (env-define env sym val)
+  (set-EnvType-frame! env
+                       (mcons (mcons sym val) (EnvType-frame env))))
+
+(define (env-set-val! env sym val)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-set-val! (EnvType-frame env) sym val)])
+        (if rv rv
+            (env-set-val! (EnvType-ex-env env) sym val)))))
+
+; ======================================================================
+
+(define (syms->frame syms)
+  (if (null? syms) '()
+      (mmap (lambda (sym)
+              (if (pair? sym)
+                  (mcons (car sym) (cadr sym))
+                  (mcons sym (eval sym (make-base-namespace)))))
+            (list->mlist syms))))
+
+(define primitive-frame
+  (syms->frame
+   `(+ - > < / * = >= <= quotient remainder sqrt cons car cdr assoc
+       eq? number? symbol? not list cadr caddr error length displayln display
+       append pair? null? (false #f) (true #t) (() (void)))))
+
+(define primitive-env (EnvType primitive-frame '()))
+
+; ======================================================================
+
+(define (call-fproc fproc vals)
+  (lambda (env)
+    (match (fproc env)
+      [(ProcedureType syms fbody proc-env)
+       (fbody (EnvType (make-frame syms vals) proc-env))]
+      [primitive-proc (apply primitive-proc vals)]
+      [_ (error "Error: analyze-apply -- unknown proc")])))
+
+(define (analyze-begin bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (for/last ([x fbodys]) (x env)))))
+
+(define (analyze-set! sym exp)
+  (let ([fexp (analyze exp)])
+    (lambda (env)
+      (env-set-val! env sym (fexp env))
+      (void))))
+
+(define (analyze-define sym analyzed-code)
+  (lambda (env)
+    (env-define env sym (analyzed-code env))))
+
+(struct ProcedureType (syms fbody env))
+
+(define (analyze-lambda syms bodys)
+  (let ([fbody (analyze-begin bodys)])
+    (lambda (env)
+      (ProcedureType syms fbody env))))
+
+(define (analyze-apply proc args)
+  (let ([fproc (analyze proc)]
+        [fargs (map analyze args)])
+    (lambda (env)
+      (let ([vals (map (lambda (x) (x env)) fargs)])
+        ((call-fproc fproc vals) env)))))
+
+(define (analyze-and bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (for/and ([x fbodys]) (x env)))))
+
+(define (analyze-or bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (for/or ([x fbodys]) (x env)))))
+
+(define (analyze-if . args)
+  (match (map analyze args)
+    [`(,fpred ,fconseq ,falter)
+     (lambda (env)
+       (if (fpred env) (fconseq env) (falter env)))]))
+
+(define (analyze-cond pairs)
+  (define (foo pa)
+    (match pa
+      [`(else . ,bodys) `(else  ,(analyze-begin bodys))]
+      [`(,test => ,recipient) `(,(analyze test) => ,(analyze recipient))]
+      [`(,pred . ,bodys) #:when (not (null? bodys)) `(,(analyze pred)  ,(analyze-begin bodys))]
+      [`(,pred) (analyze pred)]
+      [_ (error "Error: analyze-cond")]))
+  (let ([fpairs (map foo pairs)])
+    (lambda (env)
+      (define (scan e)
+        (if (null? e) (void)
+            (match (first e)
+              [`(else ,fbody) (fbody env)]
+              [`(,ftest => ,frecipient) (let ([rv (ftest env)])
+                                          (if rv
+                                              ((call-fproc frecipient `(,rv)) env)
+                                              (scan (rest e))))]
+              [`(,fpred ,fbody) (if (fpred env) (fbody env) (scan (rest e)))]
+              [fpred (let ([rv (fpred env)]) (if rv rv (scan (rest e))))])))
+      (scan fpairs))))
+
+(define (analyze-let pairs bodys)
+  (let ([fpairs (map-second analyze pairs)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (fbody (EnvType
+              (make-frame-from-pairs (map-second (lambda (x) (x env)) fpairs))
+               env)))))
+
+(define (analyze-while pred bodys)
+  (let ([fpred (analyze pred)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (define (loop)
+        (when (fpred env) (begin (fbody env) (loop))))
+      (loop))))
+
+(define (analyze-switch pred pairs)
+  (define (foo e)
+    (match e
+      [`default `default]
+      [e (analyze e)]))
+  (let* ([fpred (analyze pred)]
+         [fpairs (map (lambda x x)
+                      (map (compose1 foo first) pairs)
+                      (map (compose1 analyze-begin rest) pairs))])
+    (lambda (env)
+      (let ([rv (fpred env)])
+        (define (scan e)
+          (if (null? e) (void)
+              (match (first e)
+                [`(default ,fbody) (fbody env)]
+                [`(,fcand ,fbody) #:when (equal? rv (fcand env))
+                                  (fbody env)]
+                [_ (scan (rest e))])))
+        (scan fpairs)))))
+
+(define (analyze-for init pred step bodys)
+  (let ([finit (analyze init)]
+        [fpred (analyze pred)]
+        [fstep (analyze step)]
+        [fbodys (map analyze bodys)])
+     (lambda (env)
+       (define (scan e)
+         (cond [(null? e) (void)]
+               [(eq? `break ((first e) env)) `break]
+               [else (scan (rest e))]))
+       (define (loop)
+         (if (and (fpred env) (not (eq? `break (scan fbodys))))
+           (begin (fstep env) (loop))
+           (void)))
+       (finit env)
+       (loop))))
+        
+(define (self-evaluating? e)
+  (or (number? e) (string? e) (boolean? e)))
+
+(define (analyze e)
+  (match e
+    [e #:when (self-evaluating? e) (lambda (env) e)]
+    [`',x (lambda (env) x)]
+    [`(set! ,sym ,exp) (analyze-set! sym exp)]
+    [`(begin . ,bodys) (analyze-begin bodys)]
+    [`(lambda ,args . ,bodys) (analyze-lambda args bodys)]
+    [`(apply ,proc ,args) (analyze-apply proc args)]
+    [`(and . ,bodys) (analyze-and bodys)]
+    [`(or . ,bodys) (analyze-or bodys)]
+    [`(cond . ,pairs) (analyze-cond pairs)]
+    [`(while ,pred . ,bodys) (analyze-while pred bodys)]
+    [`(for ,init ,pred ,step . ,bodys) (analyze-for init pred step bodys)]
+    [`(break) (lambda (env) `break)]
+    [`(switch ,pred . ,pairs) (analyze-switch pred pairs)] 
+    [`(let ,pairs . ,bodys) (analyze-let pairs bodys)]
+    [`(if ,pred ,conseq ,alter) (analyze-if pred conseq alter)]
+    [`(define (,proc . ,args) . ,bodys)
+     (analyze-define proc (analyze-lambda args bodys))]
+    [`(define ,sym ,exp) (analyze-define sym (analyze exp))]
+    [`(,proc . ,args) (analyze-apply proc args)]
+    [x (lambda (env) (env-look-up env x))]))
+
+(define (my-eval e)
+  ((analyze e) primitive-env))
+
+; ======================================================================
+
+
+(define (driver)
+  (let ([a (read)])
+    (when (not (eq? a eof))
+      (let ([rv (my-eval a)])
+        (when (not (eq? rv (void))) (displayln rv))
+        (driver)))))
+(driver)
+
+****3: 支持switch,while,for和break的基本解释器
+by 1800012808
+#lang racket
+;(require r5rs)
+(define env (make-base-namespace))
+(eval '(define true #t) env)
+(eval '(define false #f) env)
+(eval '(define break (lambda () #f)) env)
+(eval '(define-syntax-rule (while predicate exp0 ...)
+         ((lambda (pre)
+             (let ((foo (lambda (f pre)
+                          (if (eq? #t pre)
+                              (begin
+                                exp0 ...
+                                (f f predicate))
+                              (void)))))
+               (foo foo pre)))
+            predicate))
+      env)
+
+(eval '(define-syntax-rule (for init predicate step exp0 ...)
+         (begin
+           init
+           ((lambda (pre)
+             (let ((foo (lambda (f pre)
+                          (if (eq? #t pre)
+                              (f f (and (and exp0 ...) (or step #t) predicate))
+                              (void)))))
+               (foo foo pre)))
+            predicate)
+           (void)))
+      env)
+
+(define (check exp)
+  (if (null? exp)
+      '()
+      (let ((f (car exp))
+            (r (cdr exp)))
+        (if (eq? f '())
+            (cons '(void) (check r))
+            (cons f (check r))))))
+
+(define (switch v lst)
+  (let ((now (car lst)))
+    (let ((first (car now))
+          (rest (cdr now)))
+      (if (eq? first 'default)
+          (eval (append (list 'begin) rest) env)
+          (if (eq? v (eval first env))
+              (eval (append (list 'begin) rest) env)
+              (switch v (cdr lst)))))))
+
+(define (myloop)
+  (let ((a (read)))
+    (if (eq? a eof)
+        (void)
+        (begin
+          (cond ((eq? (car a) 'switch) (let ((res (switch (eval (cadr a) env) (cddr a))))
+                                         (if (not (eq? res (void)))
+                                             (displayln res)
+                                             (void))))
+                (else (let ((res (eval (check a) env)))
+                           (if (not (eq? res (void)))
+                               (displayln res)
+                               (void)))))
+          (myloop)))))
+(myloop)
+
+by 1700012751
+#lang racket
+
+(require scheme/mpair)
+
+(define (map-second proc lst)
+  (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
+
+; ======================================================================
+
+(define (make-frame syms vals)
+  (mmap mcons (list->mlist syms) (list->mlist vals)))
+
+(define (make-frame-from-pairs pairs)
+  (make-frame (map first pairs) (map second pairs)))
+
+(define (frame-look-up frame sym)
+  (let ([rv (massoc sym frame)])
+    (if rv (mcdr rv) (void)))) 
+
+(define (frame-set-val! frame sym val)
+  (let ([rv (massoc sym frame)])
+    (if rv (begin (set-mcdr! rv val) #t) #f)))
+
+; ======================================================================
+
+(struct EnvType ([frame #:mutable] ex-env))
+
+(define (env-look-up env sym)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-look-up (EnvType-frame env) sym)])
+        (if (eq? rv (void))
+            (env-look-up (EnvType-ex-env env) sym)
+            rv))))
+
+(define (env-define env sym val)
+  (set-EnvType-frame! env
+                       (mcons (mcons sym val) (EnvType-frame env))))
+
+(define (env-set-val! env sym val)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-set-val! (EnvType-frame env) sym val)])
+        (if rv rv
+            (env-set-val! (EnvType-ex-env env) sym val)))))
+
+; ======================================================================
+
+(define (syms->frame syms)
+  (if (null? syms) '()
+      (mmap (lambda (sym)
+              (if (pair? sym)
+                  (mcons (car sym) (cadr sym))
+                  (mcons sym (eval sym (make-base-namespace)))))
+            (list->mlist syms))))
+
+(define primitive-frame
+  (syms->frame
+   `(+ - > < / * = >= <= quotient remainder sqrt cons car cdr assoc
+       eq? number? symbol? not list cadr caddr error length displayln display
+       append pair? null? (false #f) (true #t) (() (void)))))
+
+(define primitive-env (EnvType primitive-frame '()))
+
+; ======================================================================
+
+(define (call-fproc fproc vals)
+  (lambda (env)
+    (match (fproc env)
+      [(ProcedureType syms fbody proc-env)
+       (fbody (EnvType (make-frame syms vals) proc-env))]
+      [primitive-proc (apply primitive-proc vals)]
+      [_ (error "Error: analyze-apply -- unknown proc")])))
+
+(define (analyze-begin bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (for/last ([x fbodys]) (x env)))))
+
+(define (analyze-set! sym exp)
+  (let ([fexp (analyze exp)])
+    (lambda (env)
+      (env-set-val! env sym (fexp env))
+      (void))))
+
+(define (analyze-define sym analyzed-code)
+  (lambda (env)
+    (env-define env sym (analyzed-code env))))
+
+(struct ProcedureType (syms fbody env))
+
+(define (analyze-lambda syms bodys)
+  (let ([fbody (analyze-begin bodys)])
+    (lambda (env)
+      (ProcedureType syms fbody env))))
+
+(define (analyze-apply proc args)
+  (let ([fproc (analyze proc)]
+        [fargs (map analyze args)])
+    (lambda (env)
+      (let ([vals (map (lambda (x) (x env)) fargs)])
+        ((call-fproc fproc vals) env)))))
+
+(define (analyze-and bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (for/and ([x fbodys]) (x env)))))
+
+(define (analyze-or bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (for/or ([x fbodys]) (x env)))))
+
+(define (analyze-if . args)
+  (match (map analyze args)
+    [`(,fpred ,fconseq ,falter)
+     (lambda (env)
+       (if (fpred env) (fconseq env) (falter env)))]))
+
+(define (analyze-cond pairs)
+  (define (foo pa)
+    (match pa
+      [`(else . ,bodys) `(else  ,(analyze-begin bodys))]
+      [`(,test => ,recipient) `(,(analyze test) => ,(analyze recipient))]
+      [`(,pred . ,bodys) #:when (not (null? bodys)) `(,(analyze pred)  ,(analyze-begin bodys))]
+      [`(,pred) (analyze pred)]
+      [_ (error "Error: analyze-cond")]))
+  (let ([fpairs (map foo pairs)])
+    (lambda (env)
+      (define (scan e)
+        (if (null? e) (void)
+            (match (first e)
+              [`(else ,fbody) (fbody env)]
+              [`(,ftest => ,frecipient) (let ([rv (ftest env)])
+                                          (if rv
+                                              ((call-fproc frecipient `(,rv)) env)
+                                              (scan (rest e))))]
+              [`(,fpred ,fbody) (if (fpred env) (fbody env) (scan (rest e)))]
+              [fpred (let ([rv (fpred env)]) (if rv rv (scan (rest e))))])))
+      (scan fpairs))))
+
+(define (analyze-let pairs bodys)
+  (let ([fpairs (map-second analyze pairs)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (fbody (EnvType
+              (make-frame-from-pairs (map-second (lambda (x) (x env)) fpairs))
+               env)))))
+
+(define (analyze-while pred bodys)
+  (let ([fpred (analyze pred)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (define (loop)
+        (when (fpred env) (begin (fbody env) (loop))))
+      (loop))))
+
+(define (analyze-switch pred pairs)
+  (define (foo e)
+    (match e
+      [`default `default]
+      [e (analyze e)]))
+  (let* ([fpred (analyze pred)]
+         [fpairs (map (lambda x x)
+                      (map (compose1 foo first) pairs)
+                      (map (compose1 analyze-begin rest) pairs))])
+    (lambda (env)
+      (let ([rv (fpred env)])
+        (define (scan e)
+          (if (null? e) (void)
+              (match (first e)
+                [`(default ,fbody) (fbody env)]
+                [`(,fcand ,fbody) #:when (equal? rv (fcand env))
+                                  (fbody env)]
+                [_ (scan (rest e))])))
+        (scan fpairs)))))
+
+(define (analyze-for init pred step bodys)
+  (let ([finit (analyze init)]
+        [fpred (analyze pred)]
+        [fstep (analyze step)]
+        [fbodys (map analyze bodys)])
+     (lambda (env)
+       (define (scan e)
+         (cond [(null? e) (void)]
+               [(eq? `break ((first e) env)) `break]
+               [else (scan (rest e))]))
+       (define (loop)
+         (if (and (fpred env) (not (eq? `break (scan fbodys))))
+           (begin (fstep env) (loop))
+           (void)))
+       (finit env)
+       (loop))))
+        
+(define (self-evaluating? e)
+  (or (number? e) (string? e) (boolean? e)))
+
+(define (analyze e)
+  (match e
+    [e #:when (self-evaluating? e) (lambda (env) e)]
+    [`',x (lambda (env) x)]
+    [`(set! ,sym ,exp) (analyze-set! sym exp)]
+    [`(begin . ,bodys) (analyze-begin bodys)]
+    [`(lambda ,args . ,bodys) (analyze-lambda args bodys)]
+    [`(apply ,proc ,args) (analyze-apply proc args)]
+    [`(and . ,bodys) (analyze-and bodys)]
+    [`(or . ,bodys) (analyze-or bodys)]
+    [`(cond . ,pairs) (analyze-cond pairs)]
+    [`(while ,pred . ,bodys) (analyze-while pred bodys)]
+    [`(for ,init ,pred ,step . ,bodys) (analyze-for init pred step bodys)]
+    [`(break) (lambda (env) `break)]
+    [`(switch ,pred . ,pairs) (analyze-switch pred pairs)] 
+    [`(let ,pairs . ,bodys) (analyze-let pairs bodys)]
+    [`(if ,pred ,conseq ,alter) (analyze-if pred conseq alter)]
+    [`(define (,proc . ,args) . ,bodys)
+     (analyze-define proc (analyze-lambda args bodys))]
+    [`(define ,sym ,exp) (analyze-define sym (analyze exp))]
+    [`(,proc . ,args) (analyze-apply proc args)]
+    [x (lambda (env) (env-look-up env x))]))
+
+(define (my-eval e)
+  ((analyze e) primitive-env))
+
+; ======================================================================
+
+(define (driver)
+  (let ([a (read)])
+    (when (not (eq? a eof))
+      (let ([rv (my-eval a)])
+        (when (not (eq? rv (void))) (displayln rv))
+        (driver)))))
+(driver)
+
+by 1700012751
+#lang racket
+
+(require scheme/mpair)
+
+(define mcaar (compose1 mcar mcar))
+
+(define (map-second proc lst)
+  (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
+
+; ======================================================================
+
+(define (make-frame syms vals)
+  (mmap mcons (list->mlist syms) (list->mlist vals)))
+
+(define (make-frame-from-pairs pairs)
+  (make-frame (map first pairs) (map second pairs)))
+
+(define (frame-look-up frame sym)
+  (let ([rv (massoc sym frame)])
+    (if rv (mcdr rv) (void)))) 
+
+(define (frame-set-val! frame sym val)
+  (let ([rv (massoc sym frame)])
+    (if rv (begin (set-mcdr! rv val) #t) #f)))
+
+; ======================================================================
+
+(struct EnvType ([frame #:mutable] ex-env))
+
+(define (env-look-up env sym)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-look-up (EnvType-frame env) sym)])
+        (if (eq? rv (void))
+            (env-look-up (EnvType-ex-env env) sym)
+            rv))))
+
+(define (env-define env sym val)
+  (set-EnvType-frame! env
+                       (mcons (mcons sym val) (EnvType-frame env))))
+
+(define (env-set-val! env sym val)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-set-val! (EnvType-frame env) sym val)])
+        (if rv rv
+            (env-set-val! (EnvType-ex-env env) sym val)))))
+
+; ======================================================================
+
+(define (syms->frame syms)
+  (if (null? syms) '()
+      (mmap (lambda (sym)
+              (if (pair? sym)
+                  (mcons (car sym) (cadr sym))
+                  (mcons sym (eval sym (make-base-namespace)))))
+            (list->mlist syms))))
+
+(define primitive-frame
+  (syms->frame
+   `(+ - > < / * = >= <= quotient remainder sqrt cons car cdr assoc
+       eq? number? symbol? not list cadr caddr error length displayln display
+       append pair? null? (false #f) (true #t) (() (void)))))
+
+(define primitive-env (EnvType primitive-frame '()))
+
+; ======================================================================
+
+(define (call-fproc fproc vals)
+  (lambda (env)
+    (match (fproc env)
+      [(ProcedureType syms fbody proc-env)
+       (fbody (EnvType (make-frame syms vals) proc-env))]
+      [primitive-proc (apply primitive-proc vals)]
+      [_ (error "Error: analyze-apply -- unknown proc")])))
+
+(define (analyze-begin bodys)
+  (let ([fbodys (map analyze bodys)])
+    (define (scan e)
+      (let* ([fi (first e)]
+             [re (rest e)])
+      (if (null? re) fi
+          (lambda (env) (fi env) ((scan re) env)))))
+    (scan fbodys)))
+
+(define (analyze-set! sym exp)
+  (let ([fexp (analyze exp)])
+    (lambda (env)
+      (env-set-val! env sym (fexp env))
+      (void))))
+
+(define (analyze-define sym analyzed-code)
+  (lambda (env)
+    (env-define env sym (analyzed-code env))))
+
+(struct ProcedureType (syms fbody env))
+
+(define (analyze-lambda syms bodys)
+  (let ([fbody (analyze-begin bodys)])
+    (lambda (env)
+      (ProcedureType syms fbody env))))
+
+(define (analyze-apply proc args)
+  (let ([fproc (analyze proc)]
+        [fargs (map analyze args)])
+    (lambda (env)
+      (let ([vals (map (lambda (x) (x env)) fargs)])
+        ((call-fproc fproc vals) env)))))
+
+(define (analyze-and bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv
+              (if (null? (rest e)) rv (scan (rest e)))
+              #f)))
+      (scan fbodys))))
+
+(define (analyze-or bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv rv
+              (if (null? (rest e)) #f (scan (rest e))))))
+      (scan fbodys))))
+
+(define (analyze-if . args)
+  (match (map analyze args)
+    [`(,fpred ,fconseq ,falter)
+     (lambda (env)
+       (if (fpred env) (fconseq env) (falter env)))]))
+
+(define (analyze-cond pairs)
+  (define (foo pa)
+    (match pa
+      [`(else . ,bodys) `(else  ,(analyze-begin bodys))]
+      [`(,test => ,recipient) `(,(analyze test) => ,(analyze recipient))]
+      [`(,pred . ,bodys) #:when (not (null? bodys)) `(,(analyze pred)  ,(analyze-begin bodys))]
+      [`(,pred) (analyze pred)]
+      [_ (error "Error: analyze-cond")]))
+  (let ([fpairs (map foo pairs)])
+    (lambda (env)
+      (define (scan e)
+        (if (null? e) (void)
+            (match (first e)
+              [`(else ,fbody) (fbody env)]
+              [`(,ftest => ,frecipient) (let ([rv (ftest env)])
+                                          (if rv
+                                              ((call-fproc frecipient `(,rv)) env)
+                                              (scan (rest e))))]
+              [`(,fpred ,fbody) (if (fpred env) (fbody env) (scan (rest e)))]
+              [fpred (let ([rv (fpred env)]) (if rv rv (scan (rest e))))])))
+      (scan fpairs))))
+
+(define (analyze-let pairs bodys)
+  (let ([fpairs (map-second analyze pairs)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (fbody (EnvType
+              (make-frame-from-pairs (map-second (lambda (x) (x env)) fpairs))
+               env)))))
+
+(define (analyze-while pred bodys)
+  (let ([fpred (analyze pred)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (define (loop)
+        (when (fpred env) (begin (fbody env) (loop))))
+      (loop))))
+
+(define (analyze-switch pred pairs)
+  (define (foo e)
+    (match e
+      [`default `default]
+      [e (analyze e)]))
+  (let* ([fpred (analyze pred)]
+         [fpairs (map (lambda x x)
+                      (map (compose1 foo first) pairs)
+                      (map (compose1 analyze-begin rest) pairs))])
+    (lambda (env)
+      (let ([rv (fpred env)])
+        (define (scan e)
+          (if (null? e) (void)
+              (match (first e)
+                [`(default ,fbody) (fbody env)]
+                [`(,fcand ,fbody) #:when (equal? rv (fcand env))
+                                  (fbody env)]
+                [_ (scan (rest e))])))
+        (scan fpairs)))))
+
+(define (analyze-for init pred step bodys)
+  (let ([finit (analyze init)]
+        [fpred (analyze pred)]
+        [fstep (analyze step)]
+        [fbodys (map analyze bodys)])
+     (lambda (env)
+       (define (scan e)
+         (cond [(null? e) (void)]
+               [(eq? `break ((first e) env)) `break]
+               [else (scan (rest e))]))
+       (define (loop)
+         (if (and (fpred env) (not (eq? `break (scan fbodys))))
+           (begin (fstep env) (loop))
+           (void)))
+       (finit env)
+       (loop))))
+        
+(define (self-evaluating? e)
+  (or (number? e) (string? e) (boolean? e)))
+
+(define (analyze e)
+  (match e
+    [e #:when (self-evaluating? e) (lambda (env) e)]
+    [`',x (lambda (env) x)]
+    [`(set! ,sym ,exp) (analyze-set! sym exp)]
+    [`(begin . ,bodys) (analyze-begin bodys)]
+    [`(lambda ,args . ,bodys) (analyze-lambda args bodys)]
+    [`(apply ,proc ,args) (analyze-apply proc args)]
+    [`(and . ,bodys) (analyze-and bodys)]
+    [`(or . ,bodys) (analyze-or bodys)]
+    [`(cond . ,pairs) (analyze-cond pairs)]
+    [`(while ,pred . ,bodys) (analyze-while pred bodys)]
+    [`(for ,init ,pred ,step . ,bodys) (analyze-for init pred step bodys)]
+    [`(break) (lambda (env) `break)]
+    [`(switch ,pred . ,pairs) (analyze-switch pred pairs)] 
+    [`(let ,pairs . ,bodys) (analyze-let pairs bodys)]
+    [`(if ,pred ,conseq ,alter) (analyze-if pred conseq alter)]
+    [`(define (,proc . ,args) . ,bodys)
+     (analyze-define proc (analyze-lambda args bodys))]
+    [`(define ,sym ,exp) (analyze-define sym (analyze exp))]
+    [`(,proc . ,args) (analyze-apply proc args)]
+    [x (lambda (env) (env-look-up env x))]))
+
+(define (my-eval e)
+  ((analyze e) primitive-env))
+
+; ======================================================================
+
+
+(define (driver)
+  (let ([a (read)])
+    (when (not (eq? a eof))
+      (let ([rv (my-eval a)])
+        (when (not (eq? rv (void))) (displayln rv))
+        (driver)))))
+(driver)
+
+by 1700012751
+#lang racket
+
+(require scheme/mpair)
+
+(define mcaar (compose1 mcar mcar))
+
+(define (map-second proc lst)
+  (map (lambda x x) (map first lst) (map (compose1 proc second) lst)))
+
+; ======================================================================
+
+(define (make-frame syms vals)
+  (mmap mcons (list->mlist syms) (list->mlist vals)))
+
+(define (make-frame-from-pairs pairs)
+  (make-frame (map first pairs) (map second pairs)))
+
+(define (frame-look-up frame sym)
+  (let ([rv (massoc sym frame)])
+    (if rv (mcdr rv) (void)))) 
+
+(define (frame-set-val! frame sym val)
+  (cond [(null? frame) #f]
+        [(eq? sym (mcaar frame)) (set-mcdr! (mcar frame) val) #t]
+        [else (frame-set-val! (mcdr frame) sym val)]))
+
+; ======================================================================
+
+(struct EnvType ([frame #:mutable] ex-env))
+
+(define (env-look-up env sym)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-look-up (EnvType-frame env) sym)])
+        (if (eq? rv (void))
+            (env-look-up (EnvType-ex-env env) sym)
+            rv))))
+
+(define (env-define env sym val)
+  (set-EnvType-frame! env
+                       (mcons (mcons sym val) (EnvType-frame env))))
+
+(define (env-set-val! env sym val)
+  (if (null? env) (error "unbounded symbol:" sym)
+      (let ([rv (frame-set-val! (EnvType-frame env) sym val)])
+        (if rv rv
+            (env-set-val! (EnvType-ex-env env) sym val)))))
+
+; ======================================================================
+
+(define (syms->frame syms)
+  (if (null? syms) '()
+      (mmap (lambda (sym)
+              (if (pair? sym)
+                  (mcons (car sym) (cadr sym))
+                  (mcons sym (eval sym (make-base-namespace)))))
+            (list->mlist syms))))
+
+(define primitive-frame
+  (syms->frame
+   `(+ - > < / * = >= <= quotient remainder sqrt cons car cdr assoc
+       eq? number? symbol? not list cadr caddr error length displayln display
+       append pair? null? (false #f) (true #t) (() (void)))))
+
+(define primitive-env (EnvType primitive-frame '()))
+
+; ======================================================================
+
+(define (call-fproc fproc vals)
+  (lambda (env)
+    (match (fproc env)
+      [(ProcedureType syms fbody proc-env)
+       (fbody (EnvType (make-frame syms vals) proc-env))]
+      [primitive-proc (apply primitive-proc vals)]
+      [_ (error "Error: analyze-apply -- unknown proc")])))
+
+(define (analyze-begin bodys)
+  (let ([fbodys (map analyze bodys)])
+    (define (scan e)
+      (let* ([fi (first e)]
+             [re (rest e)])
+      (if (null? re) fi
+          (lambda (env) (fi env) ((scan re) env)))))
+    (scan fbodys)))
+
+(define (analyze-set! sym exp)
+  (let ([fexp (analyze exp)])
+    (lambda (env)
+      (env-set-val! env sym (fexp env))
+      (void))))
+
+(define (analyze-define sym analyzed-code)
+  (lambda (env)
+    (env-define env sym (analyzed-code env))))
+
+(struct ProcedureType (syms fbody env))
+
+(define (analyze-lambda syms bodys)
+  (let ([fbody (analyze-begin bodys)])
+    (lambda (env)
+      (ProcedureType syms fbody env))))
+
+(define (analyze-apply proc args)
+  (let ([fproc (analyze proc)]
+        [fargs (map analyze args)])
+    (lambda (env)
+      (let ([vals (map (lambda (x) (x env)) fargs)])
+        ((call-fproc fproc vals) env)))))
+
+(define (analyze-and bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv
+              (if (null? (rest e)) rv (scan (rest e)))
+              #f)))
+      (scan fbodys))))
+
+(define (analyze-or bodys)
+  (let ([fbodys (map analyze bodys)])
+    (lambda (env)
+      (define (scan e)
+        (let ([rv ((first e) env)])
+          (if rv rv
+              (if (null? (rest e)) #f (scan (rest e))))))
+      (scan fbodys))))
+
+(define (analyze-if . args)
+  (match (map analyze args)
+    [`(,fpred ,fconseq ,falter)
+     (lambda (env)
+       (if (fpred env) (fconseq env) (falter env)))]))
+
+(define (analyze-cond pairs)
+  (define (foo pa)
+    (match pa
+      [`(else . ,bodys) `(else  ,(analyze-begin bodys))]
+      [`(,test => ,recipient) `(,(analyze test) => ,(analyze recipient))]
+      [`(,pred . ,bodys) #:when (not (null? bodys)) `(,(analyze pred)  ,(analyze-begin bodys))]
+      [`(,pred) (analyze pred)]
+      [_ (error "Error: analyze-cond")]))
+  (let ([fpairs (map foo pairs)])
+    (lambda (env)
+      (define (scan e)
+        (if (null? e) (void)
+            (match (first e)
+              [`(else ,fbody) (fbody env)]
+              [`(,ftest => ,frecipient) (let ([rv (ftest env)])
+                                          (if rv
+                                              ((call-fproc frecipient `(,rv)) env)
+                                              (scan (rest e))))]
+              [`(,fpred ,fbody) (if (fpred env) (fbody env) (scan (rest e)))]
+              [fpred (let ([rv (fpred env)]) (if rv rv (scan (rest e))))])))
+      (scan fpairs))))
+
+(define (analyze-let pairs bodys)
+  (let ([fpairs (map-second analyze pairs)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (fbody (EnvType
+              (make-frame-from-pairs (map-second (lambda (x) (x env)) fpairs))
+               env)))))
+
+(define (analyze-while pred bodys)
+  (let ([fpred (analyze pred)]
+        [fbody (analyze-begin bodys)])
+    (lambda (env)
+      (define (loop)
+        (when (fpred env) (begin (fbody env) (loop))))
+      (loop))))
+
+(define (analyze-switch pred pairs)
+  (define (foo e)
+    (match e
+      [`default `default]
+      [e (analyze e)]))
+  (let* ([fpred (analyze pred)]
+         [fpairs (map (lambda x x)
+                      (map (compose1 foo first) pairs)
+                      (map (compose1 analyze-begin rest) pairs))])
+    (lambda (env)
+      (let ([rv (fpred env)])
+        (define (scan e)
+          (if (null? e) (void)
+              (match (first e)
+                [`(default ,fbody) (fbody env)]
+                [`(,fcand ,fbody) #:when (equal? rv (fcand env))
+                                  (fbody env)]
+                [_ (scan (rest e))])))
+        (scan fpairs)))))
+
+(define (analyze-for init pred step bodys)
+  (let ([finit (analyze init)]
+        [fpred (analyze pred)]
+        [fstep (analyze step)]
+        [fbodys (map analyze bodys)])
+     (lambda (env)
+       (define (scan e)
+         (cond [(null? e) (void)]
+               [(eq? `break ((first e) env)) `break]
+               [else (scan (rest e))]))
+       (define (loop)
+         (if (and (fpred env) (not (eq? `break (scan fbodys))))
+           (begin (fstep env) (loop))
+           (void)))
+       (finit env)
+       (loop))))
+        
+(define (self-evaluating? e)
+  (or (number? e) (string? e) (boolean? e)))
+
+(define (analyze e)
+  (match e
+    [e #:when (self-evaluating? e) (lambda (env) e)]
+    [`',x (lambda (env) x)]
+    [`(set! ,sym ,exp) (analyze-set! sym exp)]
+    [`(begin . ,bodys) (analyze-begin bodys)]
+    [`(lambda ,args . ,bodys) (analyze-lambda args bodys)]
+    [`(apply ,proc ,args) (analyze-apply proc args)]
+    [`(and . ,bodys) (analyze-and bodys)]
+    [`(or . ,bodys) (analyze-or bodys)]
+    [`(cond . ,pairs) (analyze-cond pairs)]
+    [`(while ,pred . ,bodys) (analyze-while pred bodys)]
+    [`(for ,init ,pred ,step . ,bodys) (analyze-for init pred step bodys)]
+    [`(break) (lambda (env) `break)]
+    [`(switch ,pred . ,pairs) (analyze-switch pred pairs)] 
+    [`(let ,pairs . ,bodys) (analyze-let pairs bodys)]
+    [`(if ,pred ,conseq ,alter) (analyze-if pred conseq alter)]
+    [`(define (,proc . ,args) . ,bodys)
+     (analyze-define proc (analyze-lambda args bodys))]
+    [`(define ,sym ,exp) (analyze-define sym (analyze exp))]
+    [`(,proc . ,args) (analyze-apply proc args)]
+    [x (lambda (env) (env-look-up env x))]))
+
+(define (my-eval e)
+  ((analyze e) primitive-env))
+
+; ======================================================================
+
+(define (driver)
+  (let ([a (read)])
+    (when (not (eq? a eof))
+      (let ([rv (my-eval a)])
+        (when (not (eq? rv (void))) (displayln rv))
+        (driver)))))
+(driver)
+

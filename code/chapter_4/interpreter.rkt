@@ -62,6 +62,9 @@
 
 ; ======================================================================
 
+
+(struct ProcedureType (syms fbody env))
+
 (define (call-fproc fproc vals)
   (lambda (env)
     (match (fproc env)
@@ -69,6 +72,9 @@
        (fbody (EnvType (make-frame syms vals) proc-env))]
       [primitive-proc (apply primitive-proc vals)]
       [_ (error "Error: analyze-apply -- unknown proc")])))
+
+; ======================================================================
+
 
 (define (analyze-begin bodys)
   (let ([fbodys (map analyze bodys)])
@@ -85,7 +91,6 @@
   (lambda (env)
     (env-define env sym (analyzed-code env))))
 
-(struct ProcedureType (syms fbody env))
 
 (define (analyze-lambda syms bodys)
   (let ([fbody (analyze-begin bodys)])
