@@ -1,0 +1,72 @@
+#lang racket
+
+(define (wrap e)
+  (if (list? e) e `(,e)))
+
+(define (unwrap e)
+  (if (and (list? e) (null? (rest e))) (unwrap (first e)) e))
+
+(define (index-of lst v n)
+  (if (null? lst)
+      (error "wrong format")
+      (if (eq? (car lst) v)
+          n
+          (index-of (cdr lst) v (add1 n)))))
+
+(define (split exp dlt)
+  (let ([idx (index-of exp dlt 0)])
+    (values (take exp idx) (drop exp (add1 idx)))))
+    
+(define (addend exp)
+  (let-values ([(a b) (split exp '+)]) (unwrap a)))
+
+(define (augend exp)
+  (let-values ([(a b) (split exp '+)]) (unwrap b)))
+
+(define (multiplier exp)
+  (let-values ([(a b) (split exp '*)]) (unwrap a)))
+
+(define (multiplicand exp)
+  (let-values ([(a b) (split exp '*)]) (unwrap b)))
+
+(define (make-sum x y)
+  (cond
+    [(eq? x 0) y]
+    [(eq? y 0) x]
+    [else (append (wrap x) `(+) (wrap y))]))
+
+(define (make-product x y)
+  (cond
+    [(or (eq? x 0) (eq? y 0)) 0]
+    [(eq? x 1) y]
+    [(eq? y 1) x]
+    [else `(,x * ,y)]))
+
+(define variable? symbol?)
+(define same-variable? eq?)
+(define sum? (curry member '+))
+(define product? (curry member '*))
+
+(define (deriv exp var)
+  (cond ((number? exp ) 0)
+        ((variable? exp)
+         (if (same-variable? exp var) 1 0))
+        ((sum? exp)
+         (make-sum (deriv (addend exp) var)
+                   (deriv (augend exp) var)))
+        ((product? exp)
+         (make-sum 
+          (make-product (multiplier exp)
+                        (deriv (multiplicand exp) var))
+          (make-product (deriv (multiplier exp) var)
+                        (multiplicand exp))))
+        (else 
+         (error "wrong format"))))
+
+(define (myloop)
+  (let ((a (read)))
+    (if (eq? a eof)
+        (void)
+        (begin (display (deriv a 'x)) (newline) (myloop)))))
+
+(myloop)
